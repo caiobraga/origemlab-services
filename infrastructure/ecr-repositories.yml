@@ -1,5 +1,8 @@
 AWSTemplateFormatVersion: "2010-09-09"
-Description: Shared ECR repositories for origemlab ECS service images.
+Description: >
+  Optional bootstrap for shared ECR repositories. GitHub Actions deploy workflows
+  expect these repos to already exist and only verify them before docker push.
+  Use this template once from an admin account only when the repositories do not exist yet.
 
 Resources:
   ScraperRunnerRepository:

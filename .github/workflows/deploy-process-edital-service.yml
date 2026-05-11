@@ -25,7 +25,6 @@ on:
     paths:
       - "services/process-edital-service/**"
       - "infrastructure/ecs-process-edital-service.yml"
-      - "infrastructure/ecr-repositories.yml"
       - ".github/workflows/deploy-process-edital-service.yml"
   workflow_dispatch: {}
 
@@ -52,17 +51,15 @@ jobs:
           aws-region: ${{ env.AWS_REGION }}
           role-to-assume: ${{ vars.AWS_ROLE_ARN }}
 
-      - name: Ensure ECR repositories (CloudFormation)
-        env:
-          ECR_STACK_NAME: ${{ vars.ECR_REPOSITORIES_STACK_NAME }}
+      - name: Verify ECR repository
         run: |
           set -euo pipefail
-          STACK="${ECR_STACK_NAME:-origemlab-ecr-repositories}"
-          aws cloudformation deploy \
-            --template-file infrastructure/ecr-repositories.yml \
-            --stack-name "${STACK}" \
-            --no-fail-on-empty-changeset
-          aws ecr describe-repositories --repository-names origemlab-process-edital-service --region "${AWS_REGION}"
+          REPO="origemlab-process-edital-service"
+          if ! aws ecr describe-repositories --repository-names "${REPO}" --region "${AWS_REGION}" >/dev/null; then
+            echo "ECR repository ${REPO} not found. Create it in the ECR console before deploying."
+            exit 1
+          fi
+          echo "OK: ECR repository ${REPO}"
 
       - name: Login to Amazon ECR
         id: login-ecr
