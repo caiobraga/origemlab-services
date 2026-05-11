@@ -28,11 +28,13 @@ Parameters:
 Resources:
   TelegramNotifierFunction:
     Type: AWS::Serverless::Function
+    Metadata:
+      BuildMethod: makefile
     Properties:
       FunctionName: origemlab-telegram-notifier
       Runtime: provided.al2023
       Handler: bootstrap
-      CodeUri: .out/telegram-notifier/
+      CodeUri: cmd/telegram-notifier/
       Environment:
         Variables:
           TELEGRAM_BOT_TOKEN: !Ref TelegramBotToken
@@ -48,11 +50,13 @@ Resources:
 
   ErrorReporterFunction:
     Type: AWS::Serverless::Function
+    Metadata:
+      BuildMethod: makefile
     Properties:
       FunctionName: origemlab-error-reporter
       Runtime: provided.al2023
       Handler: bootstrap
-      CodeUri: .out/error-reporter/
+      CodeUri: cmd/error-reporter/
       Environment:
         Variables:
           TELEGRAM_BOT_TOKEN: !Ref TelegramBotToken

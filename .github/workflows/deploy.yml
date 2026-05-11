@@ -50,9 +50,6 @@ jobs:
       - name: Tests
         run: go test ./...
 
-      - name: Build lambdas
-        run: make sam-build
-
       - name: SAM build
         run: sam build --cached
 
