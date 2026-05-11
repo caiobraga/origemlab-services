@@ -23,7 +23,7 @@ cd origemlab-services/services/scraper-runner
 docker build -t origemlab-scraper-runner .
 docker run --rm --env-file .env origemlab-scraper-runner
 ```
-
+ 
 ### Deploy (CloudFormation)
 
 Arquivo: `infrastructure/ecs-scraper-runner.yml`
