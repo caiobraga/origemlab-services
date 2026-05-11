@@ -1,0 +1,161 @@
+# ECS deploy: validate-edital-service (validate extracted fields via Ollama → upsert editais_corretos).
+#
+# Required repo variables:
+#   VALIDATE_EDITAL_STACK_NAME
+#   VPC_ID
+#   SUBNET_IDS
+#   SECURITY_GROUP_IDS
+# Required GitHub Actions repository secrets (same names as .env):
+#   SUPABASE_URL
+#   SUPABASE_SERVICE_ROLE_KEY
+# Optional (same names as .env):
+#   OLLAMA_BASE_URL
+#   OLLAMA_MODEL
+#   OLLAMA_TIMEOUT_MS
+#   OLLAMA_MAX_CONTEXT_CHARS
+#   VALIDATE_EDITAIS_LIMIT
+#   VALIDATE_EDITAIS_BATCH
+#   API_REQUEST_DELAY_MS
+#   DELAY_BETWEEN_EDITAIS_MS
+#   VALIDATE_FORCE_REVALIDATE
+#   VALIDATE_EDITAL_SCHEDULE_EXPRESSION (default rate(6 hours))
+#   VALIDATE_EDITAL_CLUSTER_NAME (default origemlab-validate-edital)
+name: deploy-validate-edital-service
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "services/validate-edital-service/**"
+      - "infrastructure/ecs-validate-edital-service.yml"
+      - ".github/workflows/deploy-validate-edital-service.yml"
+  workflow_dispatch: {}
+
+permissions:
+  id-token: write
+  contents: read
+
+concurrency:
+  group: validate-edital-service-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  AWS_REGION: ${{ vars.AWS_REGION }}
+
+jobs:
+  docker-ecr-and-stack:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: ${{ env.AWS_REGION }}
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+
+      - name: Ensure ECR repository
+        run: |
+          aws ecr describe-repositories --repository-names origemlab-validate-edital-service --region "${AWS_REGION}" \
+            || aws ecr create-repository --repository-name origemlab-validate-edital-service --region "${AWS_REGION}"
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and push image
+        working-directory: services/validate-edital-service
+        env:
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          REGISTRY="${{ steps.login-ecr.outputs.registry }}"
+          IMAGE="${REGISTRY}/origemlab-validate-edital-service"
+          docker build -t "${IMAGE}:${IMAGE_TAG}" -t "${IMAGE}:latest" .
+          docker push "${IMAGE}:${IMAGE_TAG}"
+          docker push "${IMAGE}:latest"
+          echo "IMAGE_URI=${IMAGE}:${IMAGE_TAG}" >> "$GITHUB_ENV"
+          echo "Built and pushed ${IMAGE}:${IMAGE_TAG}"
+
+      - name: Deploy ECS stack (CloudFormation)
+        env:
+          STACK_NAME: ${{ vars.VALIDATE_EDITAL_STACK_NAME }}
+          VPC_ID: ${{ vars.VPC_ID }}
+          SUBNET_IDS: ${{ vars.SUBNET_IDS }}
+          SECURITY_GROUP_IDS: ${{ vars.SECURITY_GROUP_IDS }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          OLLAMA_BASE_URL: ${{ vars.OLLAMA_BASE_URL }}
+          SCHEDULE_EXPRESSION: ${{ vars.VALIDATE_EDITAL_SCHEDULE_EXPRESSION }}
+          CLUSTER_NAME: ${{ vars.VALIDATE_EDITAL_CLUSTER_NAME }}
+          OLLAMA_MODEL: ${{ vars.OLLAMA_MODEL }}
+          OLLAMA_TIMEOUT_MS: ${{ vars.OLLAMA_TIMEOUT_MS }}
+          OLLAMA_MAX_CONTEXT_CHARS: ${{ vars.OLLAMA_MAX_CONTEXT_CHARS }}
+          VALIDATE_EDITAIS_LIMIT: ${{ vars.VALIDATE_EDITAIS_LIMIT }}
+          VALIDATE_EDITAIS_BATCH: ${{ vars.VALIDATE_EDITAIS_BATCH }}
+          API_REQUEST_DELAY_MS: ${{ vars.API_REQUEST_DELAY_MS }}
+          DELAY_BETWEEN_EDITAIS_MS: ${{ vars.DELAY_BETWEEN_EDITAIS_MS }}
+          VALIDATE_FORCE_REVALIDATE: ${{ vars.VALIDATE_FORCE_REVALIDATE }}
+        run: |
+          set -euo pipefail
+          : "${STACK_NAME:?Set repo variable VALIDATE_EDITAL_STACK_NAME}"
+          : "${VPC_ID:?Set repo variable VPC_ID}"
+          : "${SUBNET_IDS:?Set repo variable SUBNET_IDS}"
+          : "${SECURITY_GROUP_IDS:?Set repo variable SECURITY_GROUP_IDS}"
+          : "${SUPABASE_URL:?Set repo secret SUPABASE_URL}"
+          : "${SUPABASE_SERVICE_ROLE_KEY:?Set repo secret SUPABASE_SERVICE_ROLE_KEY}"
+          : "${OLLAMA_BASE_URL:?Set repo variable OLLAMA_BASE_URL}"
+          : "${IMAGE_URI:?IMAGE_URI missing after ECR push}"
+
+          escape_cf_list() { printf '%s' "$1" | sed 's/,/\\,/g'; }
+          SUBNET_IDS_CF=$(escape_cf_list "${SUBNET_IDS}")
+          SG_IDS_CF=$(escape_cf_list "${SECURITY_GROUP_IDS}")
+
+          SCHED="${SCHEDULE_EXPRESSION:-rate(6 hours)}"
+          CLUSTER="${CLUSTER_NAME:-origemlab-validate-edital}"
+
+          OVERRIDES=(
+            "ServiceImage=${IMAGE_URI}"
+            "VpcId=${VPC_ID}"
+            "SubnetIds=${SUBNET_IDS_CF}"
+            "SecurityGroupIds=${SG_IDS_CF}"
+            "SupabaseUrl=${SUPABASE_URL}"
+            "SupabaseServiceRoleKey=${SUPABASE_SERVICE_ROLE_KEY}"
+            "OllamaBaseUrl=${OLLAMA_BASE_URL}"
+            "ScheduleExpression=${SCHED}"
+            "ClusterName=${CLUSTER}"
+          )
+
+          if [ -n "${OLLAMA_MODEL:-}" ]; then
+            OVERRIDES+=("OllamaModel=${OLLAMA_MODEL}")
+          fi
+          if [ -n "${OLLAMA_TIMEOUT_MS:-}" ]; then
+            OVERRIDES+=("OllamaTimeoutMs=${OLLAMA_TIMEOUT_MS}")
+          fi
+          if [ -n "${OLLAMA_MAX_CONTEXT_CHARS:-}" ]; then
+            OVERRIDES+=("OllamaMaxContextChars=${OLLAMA_MAX_CONTEXT_CHARS}")
+          fi
+          if [ -n "${VALIDATE_EDITAIS_LIMIT:-}" ]; then
+            OVERRIDES+=("ValidateEditaisLimit=${VALIDATE_EDITAIS_LIMIT}")
+          fi
+          if [ -n "${VALIDATE_EDITAIS_BATCH:-}" ]; then
+            OVERRIDES+=("ValidateEditaisBatch=${VALIDATE_EDITAIS_BATCH}")
+          fi
+          if [ -n "${API_REQUEST_DELAY_MS:-}" ]; then
+            OVERRIDES+=("ApiRequestDelayMs=${API_REQUEST_DELAY_MS}")
+          fi
+          if [ -n "${DELAY_BETWEEN_EDITAIS_MS:-}" ]; then
+            OVERRIDES+=("DelayBetweenEditaisMs=${DELAY_BETWEEN_EDITAIS_MS}")
+          fi
+          if [ -n "${VALIDATE_FORCE_REVALIDATE:-}" ]; then
+            OVERRIDES+=("ValidateForceRevalidate=${VALIDATE_FORCE_REVALIDATE}")
+          fi
+
+          aws cloudformation deploy \
+            --template-file infrastructure/ecs-validate-edital-service.yml \
+            --stack-name "${STACK_NAME}" \
+            --capabilities CAPABILITY_IAM \
+            --no-fail-on-empty-changeset \
+            --parameter-overrides "${OVERRIDES[@]}"
+
+          echo "Stack ${STACK_NAME} updated; ServiceImage=${IMAGE_URI}"
+

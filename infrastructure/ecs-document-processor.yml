@@ -1,0 +1,190 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: origemlab document-processor on ECS Fargate (PDF chunks + LLM enrich + embeddings → Supabase)
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: origemlab
+  EventBusName:
+    Type: String
+    Default: default
+  ClusterName:
+    Type: String
+    Default: origemlab-document-processor
+  ProcessorImage:
+    Type: String
+    Description: "ECR image URI for document-processor"
+  ScheduleExpression:
+    Type: String
+    Default: "rate(6 hours)"
+    Description: "EventBridge Scheduler expression"
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+  SubnetIds:
+    Type: List<AWS::EC2::Subnet::Id>
+  SecurityGroupIds:
+    Type: List<AWS::EC2::SecurityGroup::Id>
+  SupabaseUrl:
+    Type: String
+    NoEcho: true
+    Description: "Supabase project URL (injected at deploy from GitHub Actions secrets)"
+  SupabaseServiceRoleKey:
+    Type: String
+    NoEcho: true
+    Description: "Supabase service role key (injected at deploy from GitHub Actions secrets)"
+  OllamaBaseUrl:
+    Type: String
+    Description: "Base URL do Ollama (chat + embed), ex. http://host:11434"
+    Default: ""
+  OllamaChatModel:
+    Type: String
+    Default: "llama3.2:3b"
+  OllamaEmbedModel:
+    Type: String
+    Default: "mxbai-embed-large:latest"
+
+Conditions:
+  HasOllamaUrl: !Not [!Equals [!Ref OllamaBaseUrl, ""]]
+
+Resources:
+  Cluster:
+    Type: AWS::ECS::Cluster
+    Properties:
+      ClusterName: !Ref ClusterName
+
+  LogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/${ProjectName}/document-processor"
+      RetentionInDays: 14
+
+  TaskExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+
+  TaskRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: PutOrigemlabEvents
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - events:PutEvents
+                Resource: "*"
+
+  TaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: !Sub "${ProjectName}-document-processor"
+      Cpu: "2048"
+      Memory: "4096"
+      NetworkMode: awsvpc
+      RequiresCompatibilities: [FARGATE]
+      ExecutionRoleArn: !GetAtt TaskExecutionRole.Arn
+      TaskRoleArn: !GetAtt TaskRole.Arn
+      ContainerDefinitions:
+        - Name: document-processor
+          Image: !Ref ProcessorImage
+          Essential: true
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref LogGroup
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: ecs
+          Environment: !If
+            - HasOllamaUrl
+            - - Name: EVENT_BUS_NAME
+                Value: !Ref EventBusName
+              - Name: OLLAMA_BASE_URL
+                Value: !Ref OllamaBaseUrl
+              - Name: OLLAMA_CHAT_MODEL
+                Value: !Ref OllamaChatModel
+              - Name: OLLAMA_EMBED_MODEL
+                Value: !Ref OllamaEmbedModel
+              - Name: SUPABASE_URL
+                Value: !Ref SupabaseUrl
+              - Name: SUPABASE_SERVICE_ROLE_KEY
+                Value: !Ref SupabaseServiceRoleKey
+            - - Name: EVENT_BUS_NAME
+                Value: !Ref EventBusName
+              - Name: OLLAMA_CHAT_MODEL
+                Value: !Ref OllamaChatModel
+              - Name: OLLAMA_EMBED_MODEL
+                Value: !Ref OllamaEmbedModel
+              - Name: SUPABASE_URL
+                Value: !Ref SupabaseUrl
+              - Name: SUPABASE_SERVICE_ROLE_KEY
+                Value: !Ref SupabaseServiceRoleKey
+
+  SchedulerRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: scheduler.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: RunEcsTask
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - ecs:RunTask
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - iam:PassRole
+                Resource:
+                  - !GetAtt TaskExecutionRole.Arn
+                  - !GetAtt TaskRole.Arn
+
+  ProcessorSchedule:
+    Type: AWS::Scheduler::Schedule
+    Properties:
+      Name: !Sub "${ProjectName}-document-processor"
+      FlexibleTimeWindow:
+        Mode: "OFF"
+      ScheduleExpression: !Ref ScheduleExpression
+      Target:
+        Arn: !GetAtt Cluster.Arn
+        RoleArn: !GetAtt SchedulerRole.Arn
+        EcsParameters:
+          TaskDefinitionArn: !Ref TaskDefinition
+          LaunchType: FARGATE
+          NetworkConfiguration:
+            AwsvpcConfiguration:
+              AssignPublicIp: ENABLED
+              Subnets: !Ref SubnetIds
+              SecurityGroups: !Ref SecurityGroupIds
+
+Outputs:
+  EcsClusterName:
+    Value: !Ref Cluster
+  TaskDefinitionArn:
+    Value: !Ref TaskDefinition
+  ScheduleName:
+    Value: !Ref ProcessorSchedule

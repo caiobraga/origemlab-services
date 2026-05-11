@@ -1,0 +1,73 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+Description: origemlab-services (EventBridge -> Lambda -> Telegram)
+
+Globals:
+  Function:
+    Timeout: 15
+    MemorySize: 256
+    Tracing: Active
+    Architectures:
+      - x86_64
+
+Parameters:
+  EventBusName:
+    Type: String
+    Default: default
+  TelegramBotToken:
+    Type: String
+    NoEcho: true
+  TelegramChatId:
+    Type: String
+    NoEcho: true
+  TelegramErrorChatId:
+    Type: String
+    Default: ""
+    NoEcho: true
+
+Resources:
+  TelegramNotifierFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: origemlab-telegram-notifier
+      Runtime: provided.al2023
+      Handler: bootstrap
+      CodeUri: .out/telegram-notifier/
+      Environment:
+        Variables:
+          TELEGRAM_BOT_TOKEN: !Ref TelegramBotToken
+          TELEGRAM_CHAT_ID: !Ref TelegramChatId
+      Events:
+        AnyOrigemlabEvent:
+          Type: EventBridgeRule
+          Properties:
+            EventBusName: !Ref EventBusName
+            Pattern:
+              source:
+                - "origemlab"
+
+  ErrorReporterFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: origemlab-error-reporter
+      Runtime: provided.al2023
+      Handler: bootstrap
+      CodeUri: .out/error-reporter/
+      Environment:
+        Variables:
+          TELEGRAM_BOT_TOKEN: !Ref TelegramBotToken
+          TELEGRAM_CHAT_ID: !Ref TelegramChatId
+          TELEGRAM_ERROR_CHAT_ID: !Ref TelegramErrorChatId
+      Events:
+        ErrorEventsOnly:
+          Type: EventBridgeRule
+          Properties:
+            EventBusName: !Ref EventBusName
+            Pattern:
+              source:
+                - "origemlab"
+              detail:
+                severity:
+                  - "error"
+                  - "fatal"
+

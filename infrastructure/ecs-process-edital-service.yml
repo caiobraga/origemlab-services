@@ -1,0 +1,178 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: origemlab process-edital-info on ECS Fargate (extract fields via Ollama → update editais)
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: origemlab
+  ClusterName:
+    Type: String
+    Default: origemlab-process-edital
+  ServiceImage:
+    Type: String
+    Description: "ECR image URI for process-edital-service"
+  ScheduleExpression:
+    Type: String
+    Default: "rate(30 minutes)"
+    Description: "EventBridge Scheduler expression"
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+  SubnetIds:
+    Type: List<AWS::EC2::Subnet::Id>
+  SecurityGroupIds:
+    Type: List<AWS::EC2::SecurityGroup::Id>
+  SupabaseUrl:
+    Type: String
+    NoEcho: true
+    Description: "Supabase project URL (injected at deploy from GitHub Actions secrets)"
+  SupabaseServiceRoleKey:
+    Type: String
+    NoEcho: true
+    Description: "Supabase service role key (injected at deploy from GitHub Actions secrets)"
+  OllamaBaseUrl:
+    Type: String
+    Description: "Base URL do Ollama (ex.: http://host:11434)"
+  OllamaModel:
+    Type: String
+    Default: "llama3.2:3b"
+  OllamaTimeoutMs:
+    Type: Number
+    Default: 240000
+  OllamaMaxContextChars:
+    Type: Number
+    Default: 22000
+  ProcessEditalLimit:
+    Type: Number
+    Default: 0
+    Description: "0 = sem limite; >0 limita quantos editais por execução"
+  DelayBetweenEditaisMs:
+    Type: Number
+    Default: 2000
+
+Resources:
+  Cluster:
+    Type: AWS::ECS::Cluster
+    Properties:
+      ClusterName: !Ref ClusterName
+
+  LogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/${ProjectName}/process-edital"
+      RetentionInDays: 14
+
+  TaskExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+
+  TaskRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+
+  TaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: !Sub "${ProjectName}-process-edital"
+      Cpu: "2048"
+      Memory: "4096"
+      NetworkMode: awsvpc
+      RequiresCompatibilities: [FARGATE]
+      ExecutionRoleArn: !GetAtt TaskExecutionRole.Arn
+      TaskRoleArn: !GetAtt TaskRole.Arn
+      ContainerDefinitions:
+        - Name: process-edital-service
+          Image: !Ref ServiceImage
+          Essential: true
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref LogGroup
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: ecs
+          Environment:
+            - Name: OLLAMA_BASE_URL
+              Value: !Ref OllamaBaseUrl
+            - Name: OLLAMA_MODEL
+              Value: !Ref OllamaModel
+            - Name: OLLAMA_TIMEOUT_MS
+              Value: !Ref OllamaTimeoutMs
+            - Name: OLLAMA_MAX_CONTEXT_CHARS
+              Value: !Ref OllamaMaxContextChars
+            - Name: PROCESS_EDITAL_LIMIT
+              Value: !Ref ProcessEditalLimit
+            - Name: DELAY_BETWEEN_EDITAIS_MS
+              Value: !Ref DelayBetweenEditaisMs
+            - Name: SUPABASE_URL
+              Value: !Ref SupabaseUrl
+            - Name: SUPABASE_SERVICE_ROLE_KEY
+              Value: !Ref SupabaseServiceRoleKey
+
+  SchedulerRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: scheduler.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: RunEcsTask
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - ecs:RunTask
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - iam:PassRole
+                Resource:
+                  - !GetAtt TaskExecutionRole.Arn
+                  - !GetAtt TaskRole.Arn
+
+  Schedule:
+    Type: AWS::Scheduler::Schedule
+    Properties:
+      Name: !Sub "${ProjectName}-process-edital"
+      FlexibleTimeWindow:
+        Mode: "OFF"
+      ScheduleExpression: !Ref ScheduleExpression
+      Target:
+        Arn: !GetAtt Cluster.Arn
+        RoleArn: !GetAtt SchedulerRole.Arn
+        EcsParameters:
+          TaskDefinitionArn: !Ref TaskDefinition
+          LaunchType: FARGATE
+          NetworkConfiguration:
+            AwsvpcConfiguration:
+              AssignPublicIp: ENABLED
+              Subnets: !Ref SubnetIds
+              SecurityGroups: !Ref SecurityGroupIds
+
+Outputs:
+  EcsClusterName:
+    Value: !Ref Cluster
+  TaskDefinitionArn:
+    Value: !Ref TaskDefinition
+  ScheduleName:
+    Value: !Ref Schedule
+

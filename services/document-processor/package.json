@@ -1,0 +1,19 @@
+{
+  "name": "origemlab-document-processor",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node src/main.mjs",
+    "run": "node src/main.mjs"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "@aws-sdk/client-eventbridge": "^3.758.0",
+    "@supabase/supabase-js": "^2.81.1",
+    "dotenv": "^16.6.1",
+    "pdf-parse": "^2.4.5",
+    "ws": "^8.18.3"
+  }
+}

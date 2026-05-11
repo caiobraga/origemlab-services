@@ -1,0 +1,136 @@
+# Document processing runs on ECS Fargate (Docker image from ECR), not Lambda.
+# SAM/Lambda deploy is separate: see deploy.yml for EventBridge → Lambda handlers only.
+#
+# Required GitHub Actions repository variables (Settings → Secrets and variables → Actions → Variables):
+#   DOCUMENT_PROCESSOR_STACK_NAME        CloudFormation stack name (e.g. origemlab-document-processor)
+#   VPC_ID                Shared VPC for all ECS Fargate tasks (vpc-...)
+#   SUBNET_IDS            Comma-separated subnet IDs (public egress)
+#   SECURITY_GROUP_IDS    Comma-separated security group IDs
+# Required GitHub Actions repository secrets:
+#   SUPABASE_URL
+#   SUPABASE_SERVICE_ROLE_KEY
+# Optional (same names as .env):
+#   OLLAMA_BASE_URL
+#   OLLAMA_CHAT_MODEL
+#   OLLAMA_EMBED_MODEL
+#   EVENT_BUS_NAME
+#   DOCUMENT_PROCESSOR_SCHEDULE_EXPRESSION default rate(6 hours)
+#   DOCUMENT_PROCESSOR_CLUSTER_NAME      default origemlab-document-processor
+name: deploy-document-processor
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "services/document-processor/**"
+      - "infrastructure/ecs-document-processor.yml"
+      - ".github/workflows/deploy-document-processor.yml"
+  workflow_dispatch: {}
+
+permissions:
+  id-token: write
+  contents: read
+
+concurrency:
+  group: document-processor-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  AWS_REGION: ${{ vars.AWS_REGION }}
+
+jobs:
+  docker-ecr-and-stack:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: ${{ env.AWS_REGION }}
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+
+      - name: Ensure ECR repository
+        run: |
+          aws ecr describe-repositories --repository-names origemlab-document-processor --region "${AWS_REGION}" \
+            || aws ecr create-repository --repository-name origemlab-document-processor --region "${AWS_REGION}"
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and push image
+        working-directory: services/document-processor
+        env:
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          REGISTRY="${{ steps.login-ecr.outputs.registry }}"
+          IMAGE="${REGISTRY}/origemlab-document-processor"
+          docker build -t "${IMAGE}:${IMAGE_TAG}" -t "${IMAGE}:latest" .
+          docker push "${IMAGE}:${IMAGE_TAG}"
+          docker push "${IMAGE}:latest"
+          echo "IMAGE_URI=${IMAGE}:${IMAGE_TAG}" >> "$GITHUB_ENV"
+          echo "Built and pushed ${IMAGE}:${IMAGE_TAG}"
+
+      - name: Deploy ECS stack (CloudFormation)
+        env:
+          STACK_NAME: ${{ vars.DOCUMENT_PROCESSOR_STACK_NAME }}
+          VPC_ID: ${{ vars.VPC_ID }}
+          SUBNET_IDS: ${{ vars.SUBNET_IDS }}
+          SECURITY_GROUP_IDS: ${{ vars.SECURITY_GROUP_IDS }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          EVENT_BUS_NAME: ${{ vars.EVENT_BUS_NAME }}
+          OLLAMA_BASE_URL: ${{ vars.OLLAMA_BASE_URL }}
+          SCHEDULE_EXPRESSION: ${{ vars.DOCUMENT_PROCESSOR_SCHEDULE_EXPRESSION }}
+          CLUSTER_NAME: ${{ vars.DOCUMENT_PROCESSOR_CLUSTER_NAME }}
+          OLLAMA_CHAT_MODEL: ${{ vars.OLLAMA_CHAT_MODEL }}
+          OLLAMA_EMBED_MODEL: ${{ vars.OLLAMA_EMBED_MODEL }}
+        run: |
+          set -euo pipefail
+          : "${STACK_NAME:?Set repo variable DOCUMENT_PROCESSOR_STACK_NAME}"
+          : "${VPC_ID:?Set repo variable VPC_ID}"
+          : "${SUBNET_IDS:?Set repo variable SUBNET_IDS}"
+          : "${SECURITY_GROUP_IDS:?Set repo variable SECURITY_GROUP_IDS}"
+          : "${SUPABASE_URL:?Set repo secret SUPABASE_URL}"
+          : "${SUPABASE_SERVICE_ROLE_KEY:?Set repo secret SUPABASE_SERVICE_ROLE_KEY}"
+          : "${IMAGE_URI:?IMAGE_URI missing after ECR push}"
+
+          escape_cf_list() { printf '%s' "$1" | sed 's/,/\\,/g'; }
+          SUBNET_IDS_CF=$(escape_cf_list "${SUBNET_IDS}")
+          SG_IDS_CF=$(escape_cf_list "${SECURITY_GROUP_IDS}")
+
+          EB="${EVENT_BUS_NAME:-default}"
+          SCHED="${SCHEDULE_EXPRESSION:-rate(6 hours)}"
+          CLUSTER="${CLUSTER_NAME:-origemlab-document-processor}"
+
+          OVERRIDES=(
+            "ProcessorImage=${IMAGE_URI}"
+            "VpcId=${VPC_ID}"
+            "SubnetIds=${SUBNET_IDS_CF}"
+            "SecurityGroupIds=${SG_IDS_CF}"
+            "SupabaseUrl=${SUPABASE_URL}"
+            "SupabaseServiceRoleKey=${SUPABASE_SERVICE_ROLE_KEY}"
+            "EventBusName=${EB}"
+            "ScheduleExpression=${SCHED}"
+            "ClusterName=${CLUSTER}"
+          )
+
+          if [ -n "${OLLAMA_CHAT_MODEL:-}" ]; then
+            OVERRIDES+=("OllamaChatModel=${OLLAMA_CHAT_MODEL}")
+          fi
+          if [ -n "${OLLAMA_EMBED_MODEL:-}" ]; then
+            OVERRIDES+=("OllamaEmbedModel=${OLLAMA_EMBED_MODEL}")
+          fi
+          if [ -n "${OLLAMA_BASE_URL:-}" ]; then
+            OVERRIDES+=("OllamaBaseUrl=${OLLAMA_BASE_URL}")
+          fi
+
+          aws cloudformation deploy \
+            --template-file infrastructure/ecs-document-processor.yml \
+            --stack-name "${STACK_NAME}" \
+            --capabilities CAPABILITY_IAM \
+            --no-fail-on-empty-changeset \
+            --parameter-overrides "${OVERRIDES[@]}"
+
+          echo "Stack ${STACK_NAME} updated; ProcessorImage=${IMAGE_URI}"

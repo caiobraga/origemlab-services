@@ -1,0 +1,120 @@
+# Scraper runner runs on ECS Fargate (Docker image from ECR), not Lambda.
+# SAM/Lambda deploy is separate: see deploy.yml for EventBridge → Lambda handlers only.
+#
+# Required GitHub Actions repository variables (Settings → Secrets and variables → Actions → Variables):
+#   SCRAPER_RUNNER_STACK_NAME              CloudFormation stack name (e.g. origemlab-scraper-runner)
+#   VPC_ID                    Shared VPC for all ECS Fargate tasks (vpc-...)
+#   SUBNET_IDS                Comma-separated subnet IDs (public egress)
+#   SECURITY_GROUP_IDS        Comma-separated security group IDs
+# Required GitHub Actions repository secrets (Settings → Secrets and variables → Actions → Secrets):
+#   SUPABASE_URL
+#   SUPABASE_SERVICE_ROLE_KEY
+# Optional:
+#   SCRAPER_RUNNER_SCHEDULE_EXPRESSION       default rate(1 hour)
+#   SCRAPER_RUNNER_CLUSTER_NAME              default origemlab-scrapers
+#   EVENT_BUS_NAME                           default default (same as SAM deploy when set)
+name: deploy-scraper-runner
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "services/scraper-runner/**"
+      - "infrastructure/ecs-scraper-runner.yml"
+      - ".github/workflows/deploy-scraper-runner.yml"
+  workflow_dispatch: {}
+
+permissions:
+  id-token: write
+  contents: read
+
+concurrency:
+  group: scraper-runner-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  AWS_REGION: ${{ vars.AWS_REGION }}
+
+jobs:
+  docker-ecr-and-stack:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: ${{ env.AWS_REGION }}
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+
+      - name: Ensure ECR repository
+        run: |
+          aws ecr describe-repositories --repository-names origemlab-scraper-runner --region "${AWS_REGION}" \
+            || aws ecr create-repository --repository-name origemlab-scraper-runner --region "${AWS_REGION}"
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and push image
+        working-directory: services/scraper-runner
+        env:
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          REGISTRY="${{ steps.login-ecr.outputs.registry }}"
+          IMAGE="${REGISTRY}/origemlab-scraper-runner"
+          docker build -t "${IMAGE}:${IMAGE_TAG}" -t "${IMAGE}:latest" .
+          docker push "${IMAGE}:${IMAGE_TAG}"
+          docker push "${IMAGE}:latest"
+          echo "IMAGE_URI=${IMAGE}:${IMAGE_TAG}" >> "$GITHUB_ENV"
+          echo "Built and pushed ${IMAGE}:${IMAGE_TAG}"
+
+      - name: Deploy ECS stack (CloudFormation)
+        env:
+          STACK_NAME: ${{ vars.SCRAPER_RUNNER_STACK_NAME }}
+          VPC_ID: ${{ vars.VPC_ID }}
+          SUBNET_IDS: ${{ vars.SUBNET_IDS }}
+          SECURITY_GROUP_IDS: ${{ vars.SECURITY_GROUP_IDS }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          EVENT_BUS_NAME: ${{ vars.EVENT_BUS_NAME }}
+          SCHEDULE_EXPRESSION: ${{ vars.SCRAPER_RUNNER_SCHEDULE_EXPRESSION }}
+          CLUSTER_NAME: ${{ vars.SCRAPER_RUNNER_CLUSTER_NAME }}
+        run: |
+          set -euo pipefail
+          : "${STACK_NAME:?Set repo variable SCRAPER_RUNNER_STACK_NAME}"
+          : "${VPC_ID:?Set repo variable VPC_ID}"
+          : "${SUBNET_IDS:?Set repo variable SUBNET_IDS}"
+          : "${SECURITY_GROUP_IDS:?Set repo variable SECURITY_GROUP_IDS}"
+          : "${SUPABASE_URL:?Set repo secret SUPABASE_URL}"
+          : "${SUPABASE_SERVICE_ROLE_KEY:?Set repo secret SUPABASE_SERVICE_ROLE_KEY}"
+          : "${IMAGE_URI:?IMAGE_URI missing after ECR push}"
+
+          escape_cf_list() { printf '%s' "$1" | sed 's/,/\\,/g'; }
+          SUBNET_IDS_CF=$(escape_cf_list "${SUBNET_IDS}")
+          SG_IDS_CF=$(escape_cf_list "${SECURITY_GROUP_IDS}")
+
+          EB="${EVENT_BUS_NAME:-default}"
+          SCHED="${SCHEDULE_EXPRESSION:-rate(1 hour)}"
+          CLUSTER="${CLUSTER_NAME:-origemlab-scrapers}"
+
+          OVERRIDES=(
+            "RunnerImage=${IMAGE_URI}"
+            "VpcId=${VPC_ID}"
+            "SubnetIds=${SUBNET_IDS_CF}"
+            "SecurityGroupIds=${SG_IDS_CF}"
+            "SupabaseUrl=${SUPABASE_URL}"
+            "SupabaseServiceRoleKey=${SUPABASE_SERVICE_ROLE_KEY}"
+            "EventBusName=${EB}"
+            "ScheduleExpression=${SCHED}"
+            "ClusterName=${CLUSTER}"
+          )
+
+          aws cloudformation deploy \
+            --template-file infrastructure/ecs-scraper-runner.yml \
+            --stack-name "${STACK_NAME}" \
+            --capabilities CAPABILITY_IAM \
+            --no-fail-on-empty-changeset \
+            --parameter-overrides "${OVERRIDES[@]}"
+
+          echo "Stack ${STACK_NAME} updated; RunnerImage=${IMAGE_URI}"
