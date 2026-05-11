@@ -1,0 +1,41 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: Shared ECR repositories for origemlab ECS service images.
+
+Resources:
+  ScraperRunnerRepository:
+    Type: AWS::ECR::Repository
+    Properties:
+      RepositoryName: origemlab-scraper-runner
+      ImageScanningConfiguration:
+        ScanOnPush: true
+
+  DocumentProcessorRepository:
+    Type: AWS::ECR::Repository
+    Properties:
+      RepositoryName: origemlab-document-processor
+      ImageScanningConfiguration:
+        ScanOnPush: true
+
+  ProcessEditalServiceRepository:
+    Type: AWS::ECR::Repository
+    Properties:
+      RepositoryName: origemlab-process-edital-service
+      ImageScanningConfiguration:
+        ScanOnPush: true
+
+  ValidateEditalServiceRepository:
+    Type: AWS::ECR::Repository
+    Properties:
+      RepositoryName: origemlab-validate-edital-service
+      ImageScanningConfiguration:
+        ScanOnPush: true
+
+Outputs:
+  ScraperRunnerRepositoryUri:
+    Value: !GetAtt ScraperRunnerRepository.RepositoryUri
+  DocumentProcessorRepositoryUri:
+    Value: !GetAtt DocumentProcessorRepository.RepositoryUri
+  ProcessEditalServiceRepositoryUri:
+    Value: !GetAtt ProcessEditalServiceRepository.RepositoryUri
+  ValidateEditalServiceRepositoryUri:
+    Value: !GetAtt ValidateEditalServiceRepository.RepositoryUri

@@ -24,6 +24,7 @@ on:
     paths:
       - "services/document-processor/**"
       - "infrastructure/ecs-document-processor.yml"
+      - "infrastructure/ecr-repositories.yml"
       - ".github/workflows/deploy-document-processor.yml"
   workflow_dispatch: {}
 
@@ -50,10 +51,17 @@ jobs:
           aws-region: ${{ env.AWS_REGION }}
           role-to-assume: ${{ vars.AWS_ROLE_ARN }}
 
-      - name: Ensure ECR repository
+      - name: Ensure ECR repositories (CloudFormation)
+        env:
+          ECR_STACK_NAME: ${{ vars.ECR_REPOSITORIES_STACK_NAME }}
         run: |
-          aws ecr describe-repositories --repository-names origemlab-document-processor --region "${AWS_REGION}" \
-            || aws ecr create-repository --repository-name origemlab-document-processor --region "${AWS_REGION}"
+          set -euo pipefail
+          STACK="${ECR_STACK_NAME:-origemlab-ecr-repositories}"
+          aws cloudformation deploy \
+            --template-file infrastructure/ecr-repositories.yml \
+            --stack-name "${STACK}" \
+            --no-fail-on-empty-changeset
+          aws ecr describe-repositories --repository-names origemlab-document-processor --region "${AWS_REGION}"
 
       - name: Login to Amazon ECR
         id: login-ecr
