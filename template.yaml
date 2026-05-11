@@ -34,7 +34,7 @@ Resources:
       FunctionName: origemlab-telegram-notifier
       Runtime: provided.al2023
       Handler: bootstrap
-      CodeUri: cmd/telegram-notifier/
+      CodeUri: .
       Environment:
         Variables:
           TELEGRAM_BOT_TOKEN: !Ref TelegramBotToken
@@ -56,7 +56,7 @@ Resources:
       FunctionName: origemlab-error-reporter
       Runtime: provided.al2023
       Handler: bootstrap
-      CodeUri: cmd/error-reporter/
+      CodeUri: .
       Environment:
         Variables:
           TELEGRAM_BOT_TOKEN: !Ref TelegramBotToken

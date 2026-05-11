@@ -3,7 +3,7 @@ SHELL := /bin/bash
 GO ?= go
 OUT ?= .out
 
-.PHONY: clean test build telegram-notifier error-reporter sam-build
+.PHONY: clean test build telegram-notifier error-reporter sam-build build-TelegramNotifierFunction build-ErrorReporterFunction
 
 clean:
 	rm -rf $(OUT)
@@ -23,4 +23,10 @@ error-reporter:
 
 sam-build: build
 	@echo "Built lambdas into $(OUT)/"
+
+build-TelegramNotifierFunction:
+	GOOS=linux GOARCH=amd64 CGO_ENABLED=0 $(GO) build -o "$(ARTIFACTS_DIR)/bootstrap" ./cmd/telegram-notifier
+
+build-ErrorReporterFunction:
+	GOOS=linux GOARCH=amd64 CGO_ENABLED=0 $(GO) build -o "$(ARTIFACTS_DIR)/bootstrap" ./cmd/error-reporter
 

@@ -1,0 +1,12 @@
+.git
+.github
+.aws-sam
+.out
+services
+jobs
+packages
+scraper-finep
+infrastructure
+**/.env
+**/.env.*
+**/node_modules
