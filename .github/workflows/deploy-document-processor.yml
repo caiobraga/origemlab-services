@@ -2,7 +2,7 @@
 # SAM/Lambda deploy is separate: see deploy.yml for EventBridge → Lambda handlers only.
 #
 # Required GitHub Actions repository variables (Settings → Secrets and variables → Actions → Variables):
-#   DOCUMENT_PROCESSOR_STACK_NAME        CloudFormation stack name (e.g. origemlab-document-processor)
+#   DOCUMENT_PROCESSOR_STACK_NAME        CloudFormation stack name (hyphens only, e.g. origemlab-document-processor)
 #   VPC_ID                Shared VPC for all ECS Fargate tasks (vpc-...)
 #   SUBNET_IDS            Comma-separated subnet IDs (public egress)
 #   SECURITY_GROUP_IDS    Comma-separated security group IDs
@@ -95,6 +95,7 @@ jobs:
         run: |
           set -euo pipefail
           : "${STACK_NAME:?Set repo variable DOCUMENT_PROCESSOR_STACK_NAME}"
+          STACK_NAME="$(bash .github/scripts/normalize-cloudformation-stack-name.sh "${STACK_NAME}")"
           : "${VPC_ID:?Set repo variable VPC_ID}"
           : "${SUBNET_IDS:?Set repo variable SUBNET_IDS}"
           : "${SECURITY_GROUP_IDS:?Set repo variable SECURITY_GROUP_IDS}"

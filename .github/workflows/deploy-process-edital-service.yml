@@ -1,7 +1,7 @@
 # ECS deploy: process-edital-service (extract fields via Ollama → update editais).
 #
 # Required repo variables:
-#   PROCESS_EDITAL_STACK_NAME
+#   PROCESS_EDITAL_STACK_NAME              hyphens only (e.g. origemlab-process-edital)
 #   VPC_ID                Shared VPC for all ECS Fargate tasks
 #   SUBNET_IDS            Shared subnet IDs (comma-separated)
 #   SECURITY_GROUP_IDS    Shared security group IDs (comma-separated)
@@ -98,6 +98,7 @@ jobs:
         run: |
           set -euo pipefail
           : "${STACK_NAME:?Set repo variable PROCESS_EDITAL_STACK_NAME}"
+          STACK_NAME="$(bash .github/scripts/normalize-cloudformation-stack-name.sh "${STACK_NAME}")"
           : "${VPC_ID:?Set repo variable VPC_ID}"
           : "${SUBNET_IDS:?Set repo variable SUBNET_IDS}"
           : "${SECURITY_GROUP_IDS:?Set repo variable SECURITY_GROUP_IDS}"

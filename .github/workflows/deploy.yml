@@ -2,7 +2,7 @@
 # Document processing: Docker → ECR → ECS Fargate (deploy-document-processor.yml).
 #
 # Required GitHub Actions repository variables:
-#   STACK_NAME
+#   STACK_NAME                             hyphens only (e.g. origemlab-services)
 # Optional:
 #   SAM_ARTIFACTS_BUCKET                     default origemlab-sam-artifacts-<account-id>
 # GithubActions IAM must allow CloudFormation on origemlab-services, SAM transform,
@@ -68,6 +68,7 @@ jobs:
         run: |
           set -euo pipefail
           : "${STACK_NAME:?Set repo variable STACK_NAME}"
+          STACK_NAME="$(bash .github/scripts/normalize-cloudformation-stack-name.sh "${STACK_NAME}")"
           : "${TELEGRAM_BOT_TOKEN:?Set repo secret TELEGRAM_BOT_TOKEN}"
           : "${TELEGRAM_CHAT_ID:?Set repo secret TELEGRAM_CHAT_ID}"
           ACCOUNT_ID="$(aws sts get-caller-identity --query Account --output text)"

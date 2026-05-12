@@ -89,6 +89,7 @@ jobs:
         run: |
           set -euo pipefail
           : "${STACK_NAME:?Set repo variable SCRAPER_RUNNER_STACK_NAME}"
+          STACK_NAME="$(bash .github/scripts/normalize-cloudformation-stack-name.sh "${STACK_NAME}")"
           : "${VPC_ID:?Set repo variable VPC_ID}"
           : "${SUBNET_IDS:?Set repo variable SUBNET_IDS}"
           : "${SECURITY_GROUP_IDS:?Set repo variable SECURITY_GROUP_IDS}"
