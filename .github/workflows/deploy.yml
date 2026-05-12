@@ -5,6 +5,8 @@
 #   STACK_NAME
 # Optional:
 #   SAM_ARTIFACTS_BUCKET                     default origemlab-sam-artifacts-<account-id>
+# GithubActions IAM must allow CloudFormation on origemlab-services, SAM transform,
+# Lambda (origemlab-telegram-notifier, origemlab-error-reporter), EventBridge rules, and logs.
 # Required GitHub Actions repository secrets:
 #   TELEGRAM_BOT_TOKEN
 #   TELEGRAM_CHAT_ID
@@ -77,6 +79,14 @@ jobs:
             else
               aws s3api create-bucket --bucket "${SAM_ARTIFACTS_BUCKET}" \
                 --create-bucket-configuration "LocationConstraint=${AWS_REGION}"
+            fi
+          fi
+          if aws cloudformation describe-stacks --stack-name "${STACK_NAME}" >/dev/null 2>&1; then
+            STATUS="$(aws cloudformation describe-stacks --stack-name "${STACK_NAME}" --query 'Stacks[0].StackStatus' --output text)"
+            if [ "${STATUS}" = "ROLLBACK_COMPLETE" ]; then
+              echo "Deleting failed stack ${STACK_NAME} before redeploy..."
+              aws cloudformation delete-stack --stack-name "${STACK_NAME}"
+              aws cloudformation wait stack-delete-complete --stack-name "${STACK_NAME}"
             fi
           fi
           sam deploy \
