@@ -2,12 +2,12 @@ FROM node:20-slim
 
 WORKDIR /app
 
-ENV NODE_ENV=production
-
-COPY package.json ./
-RUN npm install
+COPY package.json package-lock.json ./
+RUN npm ci
 
 COPY src ./src
 
-CMD ["npm","run","start"]
+ENV NODE_ENV=production
+
+CMD ["npm", "run", "start"]
 
