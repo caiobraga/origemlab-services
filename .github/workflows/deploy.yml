@@ -3,7 +3,8 @@
 #
 # Required GitHub Actions repository variables:
 #   STACK_NAME
-#   SAM_ARTIFACTS_BUCKET                     S3 bucket for SAM deployment artifacts (no --resolve-s3)
+# Optional:
+#   SAM_ARTIFACTS_BUCKET                     default origemlab-sam-artifacts-<account-id>
 # Required GitHub Actions repository secrets:
 #   TELEGRAM_BOT_TOKEN
 #   TELEGRAM_CHAT_ID
@@ -65,9 +66,11 @@ jobs:
         run: |
           set -euo pipefail
           : "${STACK_NAME:?Set repo variable STACK_NAME}"
-          : "${SAM_ARTIFACTS_BUCKET:?Set repo variable SAM_ARTIFACTS_BUCKET (S3 bucket for SAM artifacts)}"
           : "${TELEGRAM_BOT_TOKEN:?Set repo secret TELEGRAM_BOT_TOKEN}"
           : "${TELEGRAM_CHAT_ID:?Set repo secret TELEGRAM_CHAT_ID}"
+          ACCOUNT_ID="$(aws sts get-caller-identity --query Account --output text)"
+          SAM_ARTIFACTS_BUCKET="${SAM_ARTIFACTS_BUCKET:-origemlab-sam-artifacts-${ACCOUNT_ID}}"
+          echo "Using SAM artifacts bucket: ${SAM_ARTIFACTS_BUCKET}"
           if ! aws s3api head-bucket --bucket "${SAM_ARTIFACTS_BUCKET}" >/dev/null 2>&1; then
             if [ "${AWS_REGION}" = "us-east-1" ]; then
               aws s3api create-bucket --bucket "${SAM_ARTIFACTS_BUCKET}"
