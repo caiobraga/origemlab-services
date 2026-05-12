@@ -23,6 +23,7 @@ on:
       - "infrastructure/ecs-scraper-runner.yml"
       - ".github/workflows/deploy-scraper-runner.yml"
   workflow_dispatch: {}
+  workflow_call: {}
 
 permissions:
   id-token: write

@@ -26,6 +26,7 @@ on:
       - "infrastructure/ecs-document-processor.yml"
       - ".github/workflows/deploy-document-processor.yml"
   workflow_dispatch: {}
+  workflow_call: {}
 
 permissions:
   id-token: write

@@ -27,6 +27,7 @@ on:
       - "infrastructure/ecs-process-edital-service.yml"
       - ".github/workflows/deploy-process-edital-service.yml"
   workflow_dispatch: {}
+  workflow_call: {}
 
 permissions:
   id-token: write

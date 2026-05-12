@@ -1,0 +1,30 @@
+# Runs all ECS service deploy workflows in parallel (build → ECR → CloudFormation).
+# SAM/Lambda deploy remains in deploy.yml.
+name: deploy-all-ecs-services
+
+on:
+  workflow_dispatch: {}
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/deploy-all-ecs-services.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  scraper-runner:
+    uses: ./.github/workflows/deploy-scraper-runner.yml
+    secrets: inherit
+
+  document-processor:
+    uses: ./.github/workflows/deploy-document-processor.yml
+    secrets: inherit
+
+  process-edital-service:
+    uses: ./.github/workflows/deploy-process-edital-service.yml
+    secrets: inherit
+
+  validate-edital-service:
+    uses: ./.github/workflows/deploy-validate-edital-service.yml
+    secrets: inherit
