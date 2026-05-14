@@ -7,6 +7,9 @@
 #   SAM_ARTIFACTS_BUCKET                     default origemlab-sam-artifacts-<account-id>
 # GithubActions IAM must allow CloudFormation on origemlab-services, SAM transform,
 # Lambda (origemlab-telegram-notifier, origemlab-error-reporter), EventBridge rules, and logs.
+# ECS Fargate stacks (document-processor, process/validate-edital, scraper-runner): same role
+# must allow ecs:CreateService / UpdateService / RegisterTaskDefinition, logs, and (if scheduled)
+# EventBridge Scheduler — see README section "IAM: papel OIDC do GitHub Actions".
 # Required GitHub Actions repository secrets:
 #   TELEGRAM_BOT_TOKEN
 #   TELEGRAM_CHAT_ID

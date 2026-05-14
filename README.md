@@ -2,6 +2,46 @@
 
 Serviços (Lambda) consumindo eventos do EventBridge.
 
+**Serviços Node/ECS** (scrapers e workers): índice em [`services/README.md`](services/README.md).
+
+## IAM: papel OIDC do GitHub Actions (`AWS_ROLE_ARN`)
+
+Os workflows que fazem `aws cloudformation deploy` nos templates **ECS Fargate** (`infrastructure/ecs-*.yml`) usam o **mesmo** papel que o SAM (`deploy.yml`). O CloudFormation chama a API ECS **com as credenciais desse papel**, não só com o `CAPABILITY_IAM` interno ao stack.
+
+Se o deploy falhar com **AccessDenied** em `ecs:CreateService` (recurso `WorkerService`), o papel (ex.: `GithubActions`) precisa de permissões ECS além de CloudFormation/ECR. Exemplo de statement a **anexar** à política desse papel (ajuste `ACCOUNT_ID` e `REGION`; restrinja `Resource` se quiser menos superfície):
+
+```json
+{
+  "Sid": "OrigemlabEcsCloudFormationDeploy",
+  "Effect": "Allow",
+  "Action": [
+    "ecs:CreateCluster",
+    "ecs:DeleteCluster",
+    "ecs:DescribeClusters",
+    "ecs:RegisterTaskDefinition",
+    "ecs:DeregisterTaskDefinition",
+    "ecs:DescribeTaskDefinition",
+    "ecs:CreateService",
+    "ecs:UpdateService",
+    "ecs:DeleteService",
+    "ecs:DescribeServices",
+    "ecs:TagResource",
+    "ecs:UntagResource",
+    "logs:CreateLogGroup",
+    "logs:DeleteLogGroup",
+    "logs:PutRetentionPolicy",
+    "logs:DescribeLogGroups",
+    "scheduler:CreateSchedule",
+    "scheduler:DeleteSchedule",
+    "scheduler:GetSchedule",
+    "scheduler:UpdateSchedule"
+  ],
+  "Resource": "*"
+}
+```
+
+Para stacks com `OrchestrationMode=scheduled`, o EventBridge Scheduler também precisa das ações `scheduler:*` acima. O SAM continua a precisar de Lambda, EventBridge (regras), S3 (artefatos), etc., conforme o comentário em `.github/workflows/deploy.yml`.
+
 ## services/scraper-runner (ECS Fargate)
 
 Para scrapers demorados e/ou com Puppeteer/Chromium, usamos **ECS Fargate (scheduled task)** em vez de Lambda.

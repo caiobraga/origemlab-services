@@ -97,4 +97,3 @@ export async function ollamaEmbed(input: string): Promise<number[]> {
     clearTimeout(t);
   }
 }
-
