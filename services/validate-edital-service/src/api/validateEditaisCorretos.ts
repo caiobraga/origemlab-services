@@ -231,6 +231,70 @@ function asEmbedding(v: any): number[] | null {
   return nums;
 }
 
+function rowHasAnyEmbeddingRow(r: any): boolean {
+  return asEmbedding(r?.embedding_perguntas) != null || asEmbedding(r?.embedding) != null;
+}
+
+/** Alinhado a `processEditalInfo.ts` — dedupe por `documents.id`. */
+function dedupeDocumentsById(rows: any[]): any[] {
+  const m = new Map<string, any>();
+  for (const r of rows ?? []) {
+    if (r?.id != null) m.set(String(r.id), r);
+  }
+  return [...m.values()];
+}
+
+/** Chunk pertence ao edital: `metadata.edital_id` ou `file_id` (coluna ou metadata) ∈ edital_pdfs. */
+function rowBelongsToEdital(r: any, editalId: string, fileIdSet: Set<string>): boolean {
+  const eid = String(editalId).trim();
+  const mid = r?.metadata != null ? (r.metadata.edital_id ?? r.metadata.editalId) : undefined;
+  if (mid != null && String(mid).trim() === eid) return true;
+  const fid = r?.file_id != null ? String(r.file_id).trim() : "";
+  if (fid && fileIdSet.has(fid)) return true;
+  const mf = r?.metadata?.file_id != null ? String(r.metadata.file_id).trim() : "";
+  if (mf && fileIdSet.has(mf)) return true;
+  return false;
+}
+
+const VALIDATE_DOCUMENTS_SELECT = "id,file_id,content,metadata,embedding,embedding_perguntas";
+
+/**
+ * Mesma estratégia que `fetchDocumentsForEdital` em process-edital: `.or(metadata->>edital_id, file_id ∈ pdfs)`
+ * e filtro `rowBelongsToEdital` (evita perder chunks só ligados por metadata ou `metadata.file_id`).
+ */
+async function fetchDocumentsForEditalValidate(
+  supabase: SupabaseClient,
+  editalId: string,
+  fileIds: string[],
+  limit: number,
+): Promise<any[]> {
+  const eid = String(editalId).trim();
+  const cleanFids = [...new Set(fileIds.map((x) => String(x).trim()).filter(Boolean))];
+  const fidSet = new Set(cleanFids);
+
+  let data: any[] | null = null;
+  let error: any = null;
+
+  if (cleanFids.length > 0) {
+    const orFilter = `metadata->>edital_id.eq.${eid},file_id.in.(${cleanFids.join(",")})`;
+    const res = await supabase.from("documents").select(VALIDATE_DOCUMENTS_SELECT).or(orFilter).limit(limit);
+    data = res.data;
+    error = res.error;
+  } else {
+    const res = await supabase
+      .from("documents")
+      .select(VALIDATE_DOCUMENTS_SELECT)
+      .eq("metadata->>edital_id", eid)
+      .limit(limit);
+    data = res.data;
+    error = res.error;
+  }
+
+  if (error) throw new Error(`Erro ao buscar documents: ${error.message}`);
+  const merged = dedupeDocumentsById(data ?? []);
+  return merged.filter((r) => rowBelongsToEdital(r, eid, fidSet));
+}
+
 function sortDocumentRows(rows: any[]): any[] {
   return [...rows].sort((a: any, b: any) => {
     const ia = typeof a?.metadata?.chunk_index === "number" ? a.metadata.chunk_index : -1;
@@ -243,7 +307,7 @@ function sortDocumentRows(rows: any[]): any[] {
 function joinDocumentRows(rows: any[]): string {
   return rows
     .map((r: any) => {
-      const fid = String(r.file_id || r.id).slice(0, 12);
+      const fid = String(r.file_id || r.metadata?.file_id || r.id).slice(0, 12);
       const ci = typeof r?.metadata?.chunk_index === "number" ? r.metadata.chunk_index : "?";
       return `--- Documento ${fid} / chunk ${ci} ---\n${String(r.content).trim()}`;
     })
@@ -256,29 +320,8 @@ async function fetchRawDocumentRows(
   fileIds: string[],
 ): Promise<any[]> {
   const chunkLimit = Math.max(200, parseInt(process.env.VALIDATE_DOCUMENTS_LIMIT || "3000", 10) || 3000);
-  let rows: any[] = [];
-
-  if (fileIds.length > 0) {
-    const { data, error } = await supabase
-      .from("documents")
-      .select("id,file_id,content,metadata,embedding")
-      .in("file_id", fileIds)
-      .limit(chunkLimit);
-    if (error) throw new Error(`Erro ao buscar documents: ${error.message}`);
-    rows = (data ?? []).filter((r: any) => typeof r?.content === "string" && r.content.trim().length > 0);
-  }
-
-  if (rows.length === 0) {
-    const { data, error } = await supabase
-      .from("documents")
-      .select("id,file_id,content,metadata,embedding")
-      .eq("metadata->>edital_id", String(editalId))
-      .limit(chunkLimit);
-    if (error) throw new Error(`Erro ao buscar documents: ${error.message}`);
-    rows = (data ?? []).filter((r: any) => typeof r?.content === "string" && r.content.trim().length > 0);
-  }
-
-  return rows;
+  const raw = await fetchDocumentsForEditalValidate(supabase, editalId, fileIds, chunkLimit);
+  return raw.filter((r: any) => typeof r?.content === "string" && r.content.trim().length > 0);
 }
 
 function hasNonEmptyContextText(s: string): boolean {
@@ -559,7 +602,7 @@ async function validateOneEdital(
   const rowsRaw = await fetchRawDocumentRows(supabase, edital.id, fileIds);
   const wideCtx = buildWideAuditContextFromRows(rowsRaw);
   const chunksTotal = rowsRaw.length;
-  const withEmbReport = rowsRaw.filter((r: any) => asEmbedding(r.embedding) != null).length;
+  const withEmbReport = rowsRaw.filter((r: any) => rowHasAnyEmbeddingRow(r)).length;
 
   if (!hasNonEmptyContextText(wideCtx)) {
     return { inserted: false, reasons: ["sem_contexto_documents"] };
@@ -737,6 +780,13 @@ async function runValidateBatch(): Promise<{ hadWork: boolean }> {
       const nonNullFields = listNonNullExtractedFields(edital);
       const fieldsLabel = nonNullFields.length ? nonNullFields.join(", ") : "nenhum";
       console.log(`\n🧾 ${edital.numero || "N/A"} — ${edital.titulo} (${edital.fonte}) [campos=${fieldsLabel}]`);
+      if (nonNullFields.length === 0) {
+        skipped++;
+        console.log("  ⚠️ Pulado: sem_campos_extraidos_em_editais (correr process-edital antes ou ignorar)");
+        if (delayMs > 0) await new Promise((r) => setTimeout(r, delayMs));
+        if (betweenEditaisMs > 0) await new Promise((r) => setTimeout(r, betweenEditaisMs));
+        continue;
+      }
       try {
         const r = await validateOneEdital(supabase, edital);
         if (r.inserted) {
