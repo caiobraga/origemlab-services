@@ -38,9 +38,11 @@ Você precisa de:
 
 O schedule dispara uma task Fargate (default: `rate(1 hour)`), e o job publica eventos no EventBridge (`source: origemlab`).
 
+**Variáveis opcionais no GitHub** (Settings → Actions → Variables): `NODE_DNS_IPV4FIRST`, `SCRAPER_FETCH_RETRIES`, `SCRAPER_FETCH_CONNECT_TIMEOUT_MS`, `SCRAPER_FETCH_HEADERS_TIMEOUT_MS`, `SCRAPER_FETCH_BODY_TIMEOUT_MS`, `SCRAPER_SOURCE_TIMEOUT_MS`. Se não definidas, o workflow usa os mesmos defaults do `.env.example` (1, 4, 60000, 120000, 120000, 300000). Repassadas ao container via CloudFormation.
+
 ## services/document-processor (ECS Fargate)
 
-Processa `edital_pdfs` não marcados como processados: baixa o PDF do bucket `edital-pdfs`, extrai texto, divide em chunks e, **antes do embedding**, chama o Ollama (`/api/chat`) para gerar contexto alinhado ao pipeline **`api:process-edital-info`** (tipos de pergunta, campos `valor_projeto`, `prazo_inscricao`, etc., perguntas exemplo). Esse texto enriquecido é o que vai para `documents.content` e para o vetor (melhor RAG).
+Processa `edital_pdfs` não marcados como processados: baixa o PDF do bucket `edital-pdfs`, extrai texto, divide em chunks e, **antes do embedding**, chama o Ollama (`/api/chat`) para gerar contexto alinhado ao pipeline **`api:process-edital-info`** (tipos de pergunta, campos relacionados, perguntas exemplo). O texto completo enriquecido vai para `documents.content` e para o vetor **`embedding`**; o cabeçalho até “Perguntas exemplo” (sem `[TRECHO DO EDITAL]`) é embedado em **`embedding_perguntas`** para o top-k no `process-edital-service`. Migração: `sql/20260513_documents_embedding_perguntas.sql`. Retrospetivo: `npm run backfill:embedding-perguntas` (no serviço document-processor).
 
 Pré-requisitos:
 
@@ -56,7 +58,9 @@ npm install
 OLLAMA_BASE_URL=http://localhost:11434 npm run start -- --limit=2
 ```
 
-Flags: `--dry-run`, `--all` (reprocessa mesmo com `is_processed`), `--limit=N`.
+Flags: `--dry-run`, `--all` (reprocessa mesmo com `is_processed`), `--limit=N`, `--backfill-embedding-perguntas` (só preenche `embedding_perguntas` em linhas já indexadas; requer coluna na base).
+
+**AWS (default):** o CloudFormation usa `OrchestrationMode=continuous`: um **ECS Service** com `DesiredCount: 1` mantém a task ativa; o container roda com `ECS_WORKER_LOOP=1` e **repete o processamento** após cada lote, com pausa `WORKER_IDLE_MS_AFTER_WORK` / `WORKER_IDLE_MS_NO_WORK`. Para o modelo antigo (só EventBridge a intervalos), defina a variável de repositório `ECS_ORCHESTRATION_MODE=scheduled` no GitHub Actions (e mantenha `DOCUMENT_PROCESSOR_SCHEDULE_EXPRESSION`).
 
 ### Deploy
 
@@ -72,7 +76,7 @@ Configure **variáveis de repositório** (Settings → Secrets and variables →
 | `DOCUMENT_PROCESSOR_SECURITY_GROUP_IDS` | Security groups separados por vírgula |
 | `DOCUMENT_PROCESSOR_SUPABASE_SECRET_ARN` | ARN do secret no Secrets Manager (JSON: `url`, `service_role_key`) |
 
-Opcionais: `DOCUMENT_PROCESSOR_OLLAMA_BASE_URL` (URL interna do Ollama), `DOCUMENT_PROCESSOR_SCHEDULE_EXPRESSION` (default `rate(6 hours)`), `DOCUMENT_PROCESSOR_CLUSTER_NAME`, `DOCUMENT_PROCESSOR_OLLAMA_CHAT_MODEL`, `DOCUMENT_PROCESSOR_OLLAMA_EMBED_MODEL`, `EVENT_BUS_NAME` (default `default`).
+Opcionais: `ECS_ORCHESTRATION_MODE`, `WORKER_IDLE_MS_*`, `DOCUMENT_PROCESSOR_SCHEDULE_EXPRESSION`, `DOCUMENT_PROCESSOR_CLUSTER_NAME`, `DOCUMENT_PROCESSOR_OLLAMA_CHAT_MODEL`, `DOCUMENT_PROCESSOR_OLLAMA_EMBED_MODEL`, `DOCUMENT_PROCESSOR_EMBED_PERGUNTAS`, `EVENT_BUS_NAME` (default `default`).
 
 O security group da task precisa conseguir falar com o Ollama (mesma VPC ou rota privada). CPU/memória default maiores que o scraper (PDF + LLM por chunk).
 
@@ -80,7 +84,9 @@ Evento ao terminar: `DocumentProcessingCompleted` no EventBridge (`DetailType: D
 
 ## services/process-edital-service (ECS Fargate)
 
-Replica o comportamento do script `api:process-edital-info`, mas como **task Fargate agendada**: lê `documents`/`edital_pdfs`, chama o Ollama (`/api/generate`) para extrair campos e atualiza a tabela `editais` (inclui `informacoes_processadas_em`).
+Replica o comportamento do script `api:process-edital-info`, mas no **ECS Fargate**: percorre **todos** os editais (paginação Supabase), ordena por volume de chunks com texto em `documents` (RPC `process_edital_editais_com_document_chunks` — ver `sql/20260513_process_edital_editais_com_document_chunks.sql`), só chama Ollama para campos que ainda precisam de extração (`fieldNeedsExtraction`), lê `documents`/`edital_pdfs` só nesses casos e atualiza `editais`.
+
+**AWS (default):** `OrchestrationMode=continuous` — ECS Service 24/7 com loop no container (`ECS_WORKER_LOOP`). Para só agendamento EventBridge: `ECS_ORCHESTRATION_MODE=scheduled`.
 
 ### Deploy
 
@@ -97,11 +103,13 @@ Variáveis de repositório necessárias:
 | `PROCESS_EDITAL_SUPABASE_SECRET_ARN` | ARN do secret no Secrets Manager (JSON: `url`, `service_role_key`) |
 | `PROCESS_EDITAL_OLLAMA_BASE_URL` | URL interna do Ollama (`http://...:11434`) |
 
-Opcionais: `PROCESS_EDITAL_SCHEDULE_EXPRESSION`, `PROCESS_EDITAL_CLUSTER_NAME`, `PROCESS_EDITAL_OLLAMA_MODEL`, `PROCESS_EDITAL_OLLAMA_TIMEOUT_MS`, `PROCESS_EDITAL_OLLAMA_MAX_CONTEXT_CHARS`, `PROCESS_EDITAL_LIMIT`, `PROCESS_EDITAL_DELAY_BETWEEN_EDITAIS_MS`.
+Opcionais: `ECS_ORCHESTRATION_MODE` (`continuous` \| `scheduled`), `WORKER_IDLE_MS_AFTER_WORK`, `WORKER_IDLE_MS_NO_WORK`, `PROCESS_EDITAL_SCHEDULE_EXPRESSION`, `PROCESS_EDITAL_CLUSTER_NAME`, `PROCESS_EDITAL_OLLAMA_MODEL`, `PROCESS_EDITAL_OLLAMA_TIMEOUT_MS`, `PROCESS_EDITAL_OLLAMA_MAX_CONTEXT_CHARS`, `PROCESS_EDITAL_LIMIT` (máx. itens por execução do lote), `PROCESS_EDITAL_FETCH_PAGE_SIZE`, `PROCESS_EDITAL_ORDER` (`pending_first` \| `documents_chunks_only` \| `criado_em_desc`), `PROCESS_EDITAL_SKIP_CHUNK_ORDER_RPC`, `PROCESS_EDITAL_TOPK_EMBEDDING` (`perguntas` \| `full`), `PROCESS_EDITAL_ONLY_ID`, `PROCESS_EDITAL_DELAY_BETWEEN_EDITAIS_MS`.
 
 ## services/validate-edital-service (ECS Fargate)
 
-Replica o comportamento do script `api:validate-editais-corretos`: valida (e corrige) campos extraídos usando o Ollama e faz upsert em `editais_corretos` quando o edital está “apresentável” para o site (link válido, resumo mínimo e prazo parseável).
+Replica o script `api:validate-editais-corretos` no ECS Fargate.
+
+**AWS (default):** `OrchestrationMode=continuous` — ECS Service com loop (`ECS_WORKER_LOOP`). `OLLAMA_EMBED_MODEL` no task definition alinha com o top‑k por campo. Para só EventBridge: `ECS_ORCHESTRATION_MODE=scheduled`.
 
 ### Deploy
 
@@ -118,7 +126,7 @@ Variáveis de repositório necessárias:
 | `VALIDATE_EDITAL_SUPABASE_SECRET_ARN` | ARN do secret no Secrets Manager (JSON: `url`, `service_role_key`) |
 | `VALIDATE_EDITAL_OLLAMA_BASE_URL` | URL interna do Ollama (`http://...:11434`) |
 
-Opcionais: `VALIDATE_EDITAL_SCHEDULE_EXPRESSION`, `VALIDATE_EDITAL_CLUSTER_NAME`, `VALIDATE_EDITAL_OLLAMA_MODEL`, `VALIDATE_EDITAL_OLLAMA_TIMEOUT_MS`, `VALIDATE_EDITAL_OLLAMA_MAX_CONTEXT_CHARS`, `VALIDATE_EDITAIS_LIMIT`, `VALIDATE_EDITAIS_BATCH`, `VALIDATE_API_REQUEST_DELAY_MS`, `VALIDATE_DELAY_BETWEEN_EDITAIS_MS`, `VALIDATE_FORCE_REVALIDATE`.
+Opcionais: `ECS_ORCHESTRATION_MODE`, `WORKER_IDLE_MS_*`, `OLLAMA_EMBED_MODEL`, `VALIDATE_EDITAL_SCHEDULE_EXPRESSION`, `VALIDATE_EDITAL_CLUSTER_NAME`, `VALIDATE_EDITAL_OLLAMA_MODEL`, `VALIDATE_EDITAL_OLLAMA_TIMEOUT_MS`, `VALIDATE_EDITAL_OLLAMA_MAX_CONTEXT_CHARS`, `VALIDATE_EDITAIS_LIMIT`, `VALIDATE_EDITAIS_BATCH`, `VALIDATE_API_REQUEST_DELAY_MS`, `VALIDATE_DELAY_BETWEEN_EDITAIS_MS`, `VALIDATE_FORCE_REVALIDATE`.
 
 ## telegram-notifier
 

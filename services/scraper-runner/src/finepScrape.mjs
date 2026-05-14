@@ -1,4 +1,5 @@
 import * as cheerio from "cheerio";
+import { fetchWithScraperAgent } from "./fetchAgent.mjs";
 import { describeFetchError } from "./httpFetch.mjs";
 
 const BASE_URL = "https://www.finep.gov.br";
@@ -31,7 +32,7 @@ async function fetchText(url, timeoutMs = 35000) {
   let t;
   try {
     t = setTimeout(() => controller.abort(), timeoutMs);
-    const res = await fetch(url, {
+    const res = await fetchWithScraperAgent(url, {
       method: "GET",
       redirect: "follow",
       signal: controller.signal,

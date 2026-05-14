@@ -42,9 +42,24 @@ Parameters:
   OllamaEmbedModel:
     Type: String
     Default: "mxbai-embed-large:latest"
+  OrchestrationMode:
+    Type: String
+    Default: continuous
+    AllowedValues:
+      - continuous
+      - scheduled
+    Description: "continuous = 1x ECS Service com loop no container; scheduled = só EventBridge Scheduler"
+  WorkerIdleMsAfterWork:
+    Type: Number
+    Default: 8000
+  WorkerIdleMsNoWork:
+    Type: Number
+    Default: 120000
 
 Conditions:
   HasOllamaUrl: !Not [!Equals [!Ref OllamaBaseUrl, ""]]
+  IsContinuous: !Equals [!Ref OrchestrationMode, continuous]
+  IsScheduled: !Equals [!Ref OrchestrationMode, scheduled]
 
 Resources:
   Cluster:
@@ -125,6 +140,12 @@ Resources:
                 Value: !Ref SupabaseUrl
               - Name: SUPABASE_SERVICE_ROLE_KEY
                 Value: !Ref SupabaseServiceRoleKey
+              - Name: ECS_WORKER_LOOP
+                Value: !If [IsContinuous, "1", "0"]
+              - Name: WORKER_IDLE_MS_AFTER_WORK
+                Value: !Sub "${WorkerIdleMsAfterWork}"
+              - Name: WORKER_IDLE_MS_NO_WORK
+                Value: !Sub "${WorkerIdleMsNoWork}"
             - - Name: EVENT_BUS_NAME
                 Value: !Ref EventBusName
               - Name: OLLAMA_CHAT_MODEL
@@ -135,6 +156,12 @@ Resources:
                 Value: !Ref SupabaseUrl
               - Name: SUPABASE_SERVICE_ROLE_KEY
                 Value: !Ref SupabaseServiceRoleKey
+              - Name: ECS_WORKER_LOOP
+                Value: !If [IsContinuous, "1", "0"]
+              - Name: WORKER_IDLE_MS_AFTER_WORK
+                Value: !Sub "${WorkerIdleMsAfterWork}"
+              - Name: WORKER_IDLE_MS_NO_WORK
+                Value: !Sub "${WorkerIdleMsNoWork}"
 
   SchedulerRole:
     Type: AWS::IAM::Role
@@ -162,7 +189,30 @@ Resources:
                   - !GetAtt TaskExecutionRole.Arn
                   - !GetAtt TaskRole.Arn
 
+  WorkerService:
+    Condition: IsContinuous
+    Type: AWS::ECS::Service
+    Properties:
+      ServiceName: !Sub "${ProjectName}-document-processor-worker"
+      Cluster: !Ref Cluster
+      TaskDefinition: !Ref TaskDefinition
+      DesiredCount: 1
+      LaunchType: FARGATE
+      PlatformVersion: LATEST
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssignPublicIp: ENABLED
+          Subnets: !Ref SubnetIds
+          SecurityGroups: !Ref SecurityGroupIds
+      DeploymentConfiguration:
+        MaximumPercent: 200
+        MinimumHealthyPercent: 100
+        DeploymentCircuitBreaker:
+          Enable: true
+          Rollback: true
+
   ProcessorSchedule:
+    Condition: IsScheduled
     Type: AWS::Scheduler::Schedule
     Properties:
       Name: !Sub "${ProjectName}-document-processor"
@@ -187,4 +237,8 @@ Outputs:
   TaskDefinitionArn:
     Value: !Ref TaskDefinition
   ScheduleName:
+    Condition: IsScheduled
     Value: !Ref ProcessorSchedule
+  WorkerServiceName:
+    Condition: IsContinuous
+    Value: !GetAtt WorkerService.Name

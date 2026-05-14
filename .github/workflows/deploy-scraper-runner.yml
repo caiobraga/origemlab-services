@@ -13,6 +13,14 @@
 #   SCRAPER_RUNNER_SCHEDULE_EXPRESSION       default rate(1 hour)
 #   SCRAPER_RUNNER_CLUSTER_NAME              default origemlab-scrapers
 #   EVENT_BUS_NAME                           default default (same as SAM deploy when set)
+#
+# Optional repository Variables (Settings → Actions → Variables) — repassadas à task ECS:
+#   NODE_DNS_IPV4FIRST                       default 1
+#   SCRAPER_FETCH_RETRIES                    default 4
+#   SCRAPER_FETCH_CONNECT_TIMEOUT_MS         default 60000
+#   SCRAPER_FETCH_HEADERS_TIMEOUT_MS         default 120000
+#   SCRAPER_FETCH_BODY_TIMEOUT_MS            default 120000
+#   SCRAPER_SOURCE_TIMEOUT_MS                default 300000
 name: deploy-scraper-runner
 
 on:
@@ -86,6 +94,12 @@ jobs:
           EVENT_BUS_NAME: ${{ vars.EVENT_BUS_NAME }}
           SCHEDULE_EXPRESSION: ${{ vars.SCRAPER_RUNNER_SCHEDULE_EXPRESSION }}
           CLUSTER_NAME: ${{ vars.SCRAPER_RUNNER_CLUSTER_NAME }}
+          NODE_DNS_IPV4FIRST: ${{ vars.NODE_DNS_IPV4FIRST }}
+          SCRAPER_FETCH_RETRIES: ${{ vars.SCRAPER_FETCH_RETRIES }}
+          SCRAPER_FETCH_CONNECT_TIMEOUT_MS: ${{ vars.SCRAPER_FETCH_CONNECT_TIMEOUT_MS }}
+          SCRAPER_FETCH_HEADERS_TIMEOUT_MS: ${{ vars.SCRAPER_FETCH_HEADERS_TIMEOUT_MS }}
+          SCRAPER_FETCH_BODY_TIMEOUT_MS: ${{ vars.SCRAPER_FETCH_BODY_TIMEOUT_MS }}
+          SCRAPER_SOURCE_TIMEOUT_MS: ${{ vars.SCRAPER_SOURCE_TIMEOUT_MS }}
         run: |
           set -euo pipefail
           : "${STACK_NAME:?Set repo variable SCRAPER_RUNNER_STACK_NAME}"
@@ -105,6 +119,13 @@ jobs:
           SCHED="${SCHEDULE_EXPRESSION:-rate(1 hour)}"
           CLUSTER="${CLUSTER_NAME:-origemlab-scrapers}"
 
+          NODE_DNS_IPV4FIRST="${NODE_DNS_IPV4FIRST:-1}"
+          SCRAPER_FETCH_RETRIES="${SCRAPER_FETCH_RETRIES:-4}"
+          SCRAPER_FETCH_CONNECT_TIMEOUT_MS="${SCRAPER_FETCH_CONNECT_TIMEOUT_MS:-60000}"
+          SCRAPER_FETCH_HEADERS_TIMEOUT_MS="${SCRAPER_FETCH_HEADERS_TIMEOUT_MS:-120000}"
+          SCRAPER_FETCH_BODY_TIMEOUT_MS="${SCRAPER_FETCH_BODY_TIMEOUT_MS:-120000}"
+          SCRAPER_SOURCE_TIMEOUT_MS="${SCRAPER_SOURCE_TIMEOUT_MS:-300000}"
+
           OVERRIDES=(
             "RunnerImage=${IMAGE_URI}"
             "VpcId=${VPC_ID}"
@@ -115,6 +136,12 @@ jobs:
             "EventBusName=${EB}"
             "ScheduleExpression=${SCHED}"
             "ClusterName=${CLUSTER}"
+            "NodeDnsIpv4First=${NODE_DNS_IPV4FIRST}"
+            "ScraperFetchRetries=${SCRAPER_FETCH_RETRIES}"
+            "ScraperFetchConnectTimeoutMs=${SCRAPER_FETCH_CONNECT_TIMEOUT_MS}"
+            "ScraperFetchHeadersTimeoutMs=${SCRAPER_FETCH_HEADERS_TIMEOUT_MS}"
+            "ScraperFetchBodyTimeoutMs=${SCRAPER_FETCH_BODY_TIMEOUT_MS}"
+            "ScraperSourceTimeoutMs=${SCRAPER_SOURCE_TIMEOUT_MS}"
           )
 
           aws cloudformation deploy \

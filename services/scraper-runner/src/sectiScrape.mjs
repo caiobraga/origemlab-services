@@ -1,4 +1,5 @@
 import * as cheerio from "cheerio";
+import { fetchWithScraperAgent } from "./fetchAgent.mjs";
 import { filterEditaisCurrentYear } from "./yearFilter.mjs";
 
 const BASE = "https://secti.es.gov.br";
@@ -28,7 +29,7 @@ async function fetchText(url, timeoutMs = 35000) {
   const controller = new AbortController();
   const t = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const r = await fetch(url, {
+    const r = await fetchWithScraperAgent(url, {
       method: "GET",
       redirect: "follow",
       signal: controller.signal,

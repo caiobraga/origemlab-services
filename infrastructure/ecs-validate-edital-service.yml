@@ -53,9 +53,28 @@ Parameters:
   DelayBetweenEditaisMs:
     Type: Number
     Default: 6000
+  OllamaEmbedModel:
+    Type: String
+    Default: "mxbai-embed-large:latest"
   ValidateForceRevalidate:
     Type: Number
     Default: 0
+  OrchestrationMode:
+    Type: String
+    Default: continuous
+    AllowedValues:
+      - continuous
+      - scheduled
+  WorkerIdleMsAfterWork:
+    Type: Number
+    Default: 8000
+  WorkerIdleMsNoWork:
+    Type: Number
+    Default: 120000
+
+Conditions:
+  IsContinuous: !Equals [!Ref OrchestrationMode, continuous]
+  IsScheduled: !Equals [!Ref OrchestrationMode, scheduled]
 
 Resources:
   Cluster:
@@ -118,6 +137,8 @@ Resources:
               Value: !Ref OllamaBaseUrl
             - Name: OLLAMA_MODEL
               Value: !Ref OllamaModel
+            - Name: OLLAMA_EMBED_MODEL
+              Value: !Ref OllamaEmbedModel
             - Name: OLLAMA_TIMEOUT_MS
               Value: !Ref OllamaTimeoutMs
             - Name: OLLAMA_MAX_CONTEXT_CHARS
@@ -132,6 +153,12 @@ Resources:
               Value: !Ref DelayBetweenEditaisMs
             - Name: VALIDATE_FORCE_REVALIDATE
               Value: !Ref ValidateForceRevalidate
+            - Name: ECS_WORKER_LOOP
+              Value: !If [IsContinuous, "1", "0"]
+            - Name: WORKER_IDLE_MS_AFTER_WORK
+              Value: !Sub "${WorkerIdleMsAfterWork}"
+            - Name: WORKER_IDLE_MS_NO_WORK
+              Value: !Sub "${WorkerIdleMsNoWork}"
             - Name: SUPABASE_URL
               Value: !Ref SupabaseUrl
             - Name: SUPABASE_SERVICE_ROLE_KEY
@@ -163,7 +190,30 @@ Resources:
                   - !GetAtt TaskExecutionRole.Arn
                   - !GetAtt TaskRole.Arn
 
+  WorkerService:
+    Condition: IsContinuous
+    Type: AWS::ECS::Service
+    Properties:
+      ServiceName: !Sub "${ProjectName}-validate-edital-worker"
+      Cluster: !Ref Cluster
+      TaskDefinition: !Ref TaskDefinition
+      DesiredCount: 1
+      LaunchType: FARGATE
+      PlatformVersion: LATEST
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssignPublicIp: ENABLED
+          Subnets: !Ref SubnetIds
+          SecurityGroups: !Ref SecurityGroupIds
+      DeploymentConfiguration:
+        MaximumPercent: 200
+        MinimumHealthyPercent: 100
+        DeploymentCircuitBreaker:
+          Enable: true
+          Rollback: true
+
   Schedule:
+    Condition: IsScheduled
     Type: AWS::Scheduler::Schedule
     Properties:
       Name: !Sub "${ProjectName}-validate-edital"
@@ -188,5 +238,9 @@ Outputs:
   TaskDefinitionArn:
     Value: !Ref TaskDefinition
   ScheduleName:
+    Condition: IsScheduled
     Value: !Ref Schedule
+  WorkerServiceName:
+    Condition: IsContinuous
+    Value: !GetAtt WorkerService.Name
 

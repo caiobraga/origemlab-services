@@ -48,6 +48,25 @@ Parameters:
   DelayBetweenEditaisMs:
     Type: Number
     Default: 2000
+  OrchestrationMode:
+    Type: String
+    Default: continuous
+    AllowedValues:
+      - continuous
+      - scheduled
+    Description: "continuous = 1x ECS Service com loop no container; scheduled = só EventBridge Scheduler"
+  WorkerIdleMsAfterWork:
+    Type: Number
+    Default: 8000
+    Description: "Pausa (ms) entre lotes quando há editais na fila (modo continuous)"
+  WorkerIdleMsNoWork:
+    Type: Number
+    Default: 120000
+    Description: "Pausa (ms) quando a fila veio vazia (modo continuous)"
+
+Conditions:
+  IsContinuous: !Equals [!Ref OrchestrationMode, continuous]
+  IsScheduled: !Equals [!Ref OrchestrationMode, scheduled]
 
 Resources:
   Cluster:
@@ -118,6 +137,12 @@ Resources:
               Value: !Ref ProcessEditalLimit
             - Name: DELAY_BETWEEN_EDITAIS_MS
               Value: !Ref DelayBetweenEditaisMs
+            - Name: ECS_WORKER_LOOP
+              Value: !If [IsContinuous, "1", "0"]
+            - Name: WORKER_IDLE_MS_AFTER_WORK
+              Value: !Sub "${WorkerIdleMsAfterWork}"
+            - Name: WORKER_IDLE_MS_NO_WORK
+              Value: !Sub "${WorkerIdleMsNoWork}"
             - Name: SUPABASE_URL
               Value: !Ref SupabaseUrl
             - Name: SUPABASE_SERVICE_ROLE_KEY
@@ -149,7 +174,30 @@ Resources:
                   - !GetAtt TaskExecutionRole.Arn
                   - !GetAtt TaskRole.Arn
 
+  WorkerService:
+    Condition: IsContinuous
+    Type: AWS::ECS::Service
+    Properties:
+      ServiceName: !Sub "${ProjectName}-process-edital-worker"
+      Cluster: !Ref Cluster
+      TaskDefinition: !Ref TaskDefinition
+      DesiredCount: 1
+      LaunchType: FARGATE
+      PlatformVersion: LATEST
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssignPublicIp: ENABLED
+          Subnets: !Ref SubnetIds
+          SecurityGroups: !Ref SecurityGroupIds
+      DeploymentConfiguration:
+        MaximumPercent: 200
+        MinimumHealthyPercent: 100
+        DeploymentCircuitBreaker:
+          Enable: true
+          Rollback: true
+
   Schedule:
+    Condition: IsScheduled
     Type: AWS::Scheduler::Schedule
     Properties:
       Name: !Sub "${ProjectName}-process-edital"
@@ -174,5 +222,9 @@ Outputs:
   TaskDefinitionArn:
     Value: !Ref TaskDefinition
   ScheduleName:
+    Condition: IsScheduled
     Value: !Ref Schedule
+  WorkerServiceName:
+    Condition: IsContinuous
+    Value: !GetAtt WorkerService.Name
 

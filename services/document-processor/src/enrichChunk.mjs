@@ -1,5 +1,20 @@
 import { FIELD_KEYWORD_HINTS, PROCESS_EDITAL_FIELDS } from "./constants.mjs";
 
+const CONTEXTO_BUSCA_PREFIX = "[CONTEXTO PARA BUSCA — alinhado ao pipeline process-edital-info]";
+
+/**
+ * A partir do `content` gravado no document (cabeçalho + [TRECHO DO EDITAL] + texto), devolve só a parte
+ * usada para embedding de retrieval / backfill.
+ */
+export function retrievalEmbeddingInputFromChunkContent(content) {
+  const s = String(content || "").trim();
+  if (!s) return "";
+  const marker = "[TRECHO DO EDITAL]";
+  const i = s.indexOf(marker);
+  if (i > 0) return s.slice(0, i).trim();
+  return s.slice(0, Math.min(s.length, 4096));
+}
+
 /** Lido em runtime (depois de loadEnv no main) — não usar no topo do módulo com ESM. */
 function ollamaBaseUrl() {
   return (process.env.OLLAMA_BASE_URL || "http://localhost:11434").replace(/\/$/, "");
@@ -36,6 +51,7 @@ export async function enrichChunkForRetrieval(plainChunk, { chunkIndex = 0 } = {
   if (enrichEnabled === "0" || enrichEnabled.toLowerCase() === "false") {
     return {
       embeddingText: plainChunk,
+      embeddingRetrievalText: plainChunk,
       enrichment: null,
       skipped: true,
     };
@@ -98,7 +114,7 @@ Resposta APENAS neste formato JSON:
       };
 
       const header = [
-        "[CONTEXTO PARA BUSCA — alinhado ao pipeline process-edital-info]",
+        CONTEXTO_BUSCA_PREFIX,
         `Tipos de pergunta: ${enrichment.tipos_de_pergunta.join("; ") || "(não especificado)"}`,
         `Campos relacionados: ${enrichment.campos_relacionados.join(", ") || "(nenhum)"}`,
         `Perguntas exemplo: ${enrichment.perguntas_exemplo.join(" | ") || "(nenhuma)"}`,
@@ -107,8 +123,14 @@ Resposta APENAS neste formato JSON:
       ].join("\n");
 
       const embeddingText = `${header}\n${plainChunk.trim()}`;
+      const embeddingRetrievalText = [
+        CONTEXTO_BUSCA_PREFIX,
+        `Tipos de pergunta: ${enrichment.tipos_de_pergunta.join("; ") || "(não especificado)"}`,
+        `Campos relacionados: ${enrichment.campos_relacionados.join(", ") || "(nenhum)"}`,
+        `Perguntas exemplo: ${enrichment.perguntas_exemplo.join(" | ") || "(nenhuma)"}`,
+      ].join("\n");
 
-      return { embeddingText, enrichment, skipped: false };
+      return { embeddingText, embeddingRetrievalText, enrichment, skipped: false };
     } catch (e) {
       lastErr = e;
       await sleep(300 * (attempt + 1));
@@ -129,6 +151,7 @@ Resposta APENAS neste formato JSON:
   }
   return {
     embeddingText: plainChunk,
+    embeddingRetrievalText: plainChunk,
     enrichment: null,
     skipped: false,
     enrichFailed: true,

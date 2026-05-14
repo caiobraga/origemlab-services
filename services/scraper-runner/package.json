@@ -14,7 +14,8 @@
     "@supabase/supabase-js": "^2.81.1",
     "cheerio": "^1.1.2",
     "dotenv": "^16.6.1",
-    "puppeteer": "^24.0.0"
+    "puppeteer": "^24.0.0",
+    "undici": "^5.28.5"
   }
 }
 

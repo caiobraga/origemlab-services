@@ -15,7 +15,9 @@
 #   OLLAMA_MAX_CONTEXT_CHARS
 #   PROCESS_EDITAL_LIMIT
 #   DELAY_BETWEEN_EDITAIS_MS
-#   PROCESS_EDITAL_SCHEDULE_EXPRESSION (default rate(30 minutes))
+#   PROCESS_EDITAL_SCHEDULE_EXPRESSION (default rate(30 minutes); só com OrchestrationMode=scheduled)
+#   ECS_ORCHESTRATION_MODE (default continuous): continuous = ECS Service + loop no container; scheduled = só EventBridge
+#   WORKER_IDLE_MS_AFTER_WORK / WORKER_IDLE_MS_NO_WORK (opcional; defaults no CloudFormation)
 #   PROCESS_EDITAL_CLUSTER_NAME (default origemlab-process-edital)
 name: deploy-process-edital-service
 
@@ -95,6 +97,9 @@ jobs:
           OLLAMA_MAX_CONTEXT_CHARS: ${{ vars.OLLAMA_MAX_CONTEXT_CHARS }}
           PROCESS_EDITAL_LIMIT: ${{ vars.PROCESS_EDITAL_LIMIT }}
           DELAY_BETWEEN_EDITAIS_MS: ${{ vars.DELAY_BETWEEN_EDITAIS_MS }}
+          ECS_ORCHESTRATION_MODE: ${{ vars.ECS_ORCHESTRATION_MODE }}
+          WORKER_IDLE_MS_AFTER_WORK: ${{ vars.WORKER_IDLE_MS_AFTER_WORK }}
+          WORKER_IDLE_MS_NO_WORK: ${{ vars.WORKER_IDLE_MS_NO_WORK }}
         run: |
           set -euo pipefail
           : "${STACK_NAME:?Set repo variable PROCESS_EDITAL_STACK_NAME}"
@@ -113,6 +118,7 @@ jobs:
 
           SCHED="${SCHEDULE_EXPRESSION:-rate(30 minutes)}"
           CLUSTER="${CLUSTER_NAME:-origemlab-process-edital}"
+          ORCH="${ECS_ORCHESTRATION_MODE:-continuous}"
 
           OVERRIDES=(
             "ServiceImage=${IMAGE_URI}"
@@ -124,6 +130,7 @@ jobs:
             "OllamaBaseUrl=${OLLAMA_BASE_URL}"
             "ScheduleExpression=${SCHED}"
             "ClusterName=${CLUSTER}"
+            "OrchestrationMode=${ORCH}"
           )
 
           if [ -n "${OLLAMA_MODEL:-}" ]; then
@@ -140,6 +147,12 @@ jobs:
           fi
           if [ -n "${DELAY_BETWEEN_EDITAIS_MS:-}" ]; then
             OVERRIDES+=("DelayBetweenEditaisMs=${DELAY_BETWEEN_EDITAIS_MS}")
+          fi
+          if [ -n "${WORKER_IDLE_MS_AFTER_WORK:-}" ]; then
+            OVERRIDES+=("WorkerIdleMsAfterWork=${WORKER_IDLE_MS_AFTER_WORK}")
+          fi
+          if [ -n "${WORKER_IDLE_MS_NO_WORK:-}" ]; then
+            OVERRIDES+=("WorkerIdleMsNoWork=${WORKER_IDLE_MS_NO_WORK}")
           fi
 
           aws cloudformation deploy \

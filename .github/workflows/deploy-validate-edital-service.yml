@@ -18,8 +18,11 @@
 #   API_REQUEST_DELAY_MS
 #   DELAY_BETWEEN_EDITAIS_MS
 #   VALIDATE_FORCE_REVALIDATE
-#   VALIDATE_EDITAL_SCHEDULE_EXPRESSION (default rate(6 hours))
+#   VALIDATE_EDITAL_SCHEDULE_EXPRESSION (default rate(6 hours); só com OrchestrationMode=scheduled)
 #   VALIDATE_EDITAL_CLUSTER_NAME (default origemlab-validate-edital)
+#   OLLAMA_EMBED_MODEL (recomendado; mesmo do document-processor)
+#   ECS_ORCHESTRATION_MODE (default continuous)
+#   WORKER_IDLE_MS_AFTER_WORK / WORKER_IDLE_MS_NO_WORK (opcional)
 name: deploy-validate-edital-service
 
 on:
@@ -101,6 +104,10 @@ jobs:
           API_REQUEST_DELAY_MS: ${{ vars.API_REQUEST_DELAY_MS }}
           DELAY_BETWEEN_EDITAIS_MS: ${{ vars.DELAY_BETWEEN_EDITAIS_MS }}
           VALIDATE_FORCE_REVALIDATE: ${{ vars.VALIDATE_FORCE_REVALIDATE }}
+          OLLAMA_EMBED_MODEL: ${{ vars.OLLAMA_EMBED_MODEL }}
+          ECS_ORCHESTRATION_MODE: ${{ vars.ECS_ORCHESTRATION_MODE }}
+          WORKER_IDLE_MS_AFTER_WORK: ${{ vars.WORKER_IDLE_MS_AFTER_WORK }}
+          WORKER_IDLE_MS_NO_WORK: ${{ vars.WORKER_IDLE_MS_NO_WORK }}
         run: |
           set -euo pipefail
           : "${STACK_NAME:?Set repo variable VALIDATE_EDITAL_STACK_NAME}"
@@ -119,6 +126,7 @@ jobs:
 
           SCHED="${SCHEDULE_EXPRESSION:-rate(6 hours)}"
           CLUSTER="${CLUSTER_NAME:-origemlab-validate-edital}"
+          ORCH="${ECS_ORCHESTRATION_MODE:-continuous}"
 
           OVERRIDES=(
             "ServiceImage=${IMAGE_URI}"
@@ -130,10 +138,14 @@ jobs:
             "OllamaBaseUrl=${OLLAMA_BASE_URL}"
             "ScheduleExpression=${SCHED}"
             "ClusterName=${CLUSTER}"
+            "OrchestrationMode=${ORCH}"
           )
 
           if [ -n "${OLLAMA_MODEL:-}" ]; then
             OVERRIDES+=("OllamaModel=${OLLAMA_MODEL}")
+          fi
+          if [ -n "${OLLAMA_EMBED_MODEL:-}" ]; then
+            OVERRIDES+=("OllamaEmbedModel=${OLLAMA_EMBED_MODEL}")
           fi
           if [ -n "${OLLAMA_TIMEOUT_MS:-}" ]; then
             OVERRIDES+=("OllamaTimeoutMs=${OLLAMA_TIMEOUT_MS}")
@@ -155,6 +167,12 @@ jobs:
           fi
           if [ -n "${VALIDATE_FORCE_REVALIDATE:-}" ]; then
             OVERRIDES+=("ValidateForceRevalidate=${VALIDATE_FORCE_REVALIDATE}")
+          fi
+          if [ -n "${WORKER_IDLE_MS_AFTER_WORK:-}" ]; then
+            OVERRIDES+=("WorkerIdleMsAfterWork=${WORKER_IDLE_MS_AFTER_WORK}")
+          fi
+          if [ -n "${WORKER_IDLE_MS_NO_WORK:-}" ]; then
+            OVERRIDES+=("WorkerIdleMsNoWork=${WORKER_IDLE_MS_NO_WORK}")
           fi
 
           aws cloudformation deploy \

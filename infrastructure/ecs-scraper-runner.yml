@@ -33,6 +33,27 @@ Parameters:
     NoEcho: true
     Description: "Supabase service role key (injected at deploy from GitHub Actions secrets)"
 
+  # Opcionais: sobrescreva via GitHub Actions repository Variables (ver deploy-scraper-runner.yml)
+  NodeDnsIpv4First:
+    Type: String
+    Default: "1"
+    Description: "Se não vazio, ativa dns.setDefaultResultOrder('ipv4first') no Node (ver main.mjs)"
+  ScraperFetchRetries:
+    Type: String
+    Default: "4"
+  ScraperFetchConnectTimeoutMs:
+    Type: String
+    Default: "60000"
+  ScraperFetchHeadersTimeoutMs:
+    Type: String
+    Default: "120000"
+  ScraperFetchBodyTimeoutMs:
+    Type: String
+    Default: "120000"
+  ScraperSourceTimeoutMs:
+    Type: String
+    Default: "300000"
+
 Resources:
   Cluster:
     Type: AWS::ECS::Cluster
@@ -105,6 +126,18 @@ Resources:
               Value: !Ref SupabaseUrl
             - Name: SUPABASE_SERVICE_ROLE_KEY
               Value: !Ref SupabaseServiceRoleKey
+            - Name: NODE_DNS_IPV4FIRST
+              Value: !Ref NodeDnsIpv4First
+            - Name: SCRAPER_FETCH_RETRIES
+              Value: !Ref ScraperFetchRetries
+            - Name: SCRAPER_FETCH_CONNECT_TIMEOUT_MS
+              Value: !Ref ScraperFetchConnectTimeoutMs
+            - Name: SCRAPER_FETCH_HEADERS_TIMEOUT_MS
+              Value: !Ref ScraperFetchHeadersTimeoutMs
+            - Name: SCRAPER_FETCH_BODY_TIMEOUT_MS
+              Value: !Ref ScraperFetchBodyTimeoutMs
+            - Name: SCRAPER_SOURCE_TIMEOUT_MS
+              Value: !Ref ScraperSourceTimeoutMs
 
   SchedulerRole:
     Type: AWS::IAM::Role

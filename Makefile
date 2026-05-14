@@ -29,4 +29,3 @@ build-TelegramNotifierFunction:
 
 build-ErrorReporterFunction:
 	GOOS=linux GOARCH=amd64 CGO_ENABLED=0 $(GO) build -o "$(ARTIFACTS_DIR)/bootstrap" ./cmd/error-reporter
-

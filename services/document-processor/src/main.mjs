@@ -1,13 +1,15 @@
 #!/usr/bin/env node
 /**
- * PDF → texto → chunks → (opcional) enriquecimento LLM alinhado ao process-edital-info → documents + embedding.
- * Baseado em originlab/scripts/db/populate-documents-from-pdfs.ts com etapa extra enrichChunkForRetrieval.
+ * PDF → texto → chunks → (opcional) enriquecimento LLM alinhado ao process-edital-info → documents.
+ * Grava `embedding` (texto completo do chunk) e `embedding_perguntas` (só cabeçalho até “Perguntas exemplo” — top-k no process-edital).
+ * Retrospetivo: `npm run start -- --backfill-embedding-perguntas` (após sql/20260513_documents_embedding_perguntas.sql).
  *
  * Env: SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, OLLAMA_BASE_URL, OLLAMA_CHAT_MODEL, OLLAMA_EMBED_MODEL,
- *      CHUNK_SIZE, CHUNK_OVERLAP, ENRICH_CHUNKS=1|0, CHUNK_ENRICH_DELAY_MS, DISABLE_EVENTBRIDGE
+ *      CHUNK_SIZE, CHUNK_OVERLAP, ENRICH_CHUNKS=1|0, CHUNK_ENRICH_DELAY_MS, DISABLE_EVENTBRIDGE,
+ *      DOCUMENT_PROCESSOR_EMBED_PERGUNTAS=1|0 (segunda coluna de embedding; default 1)
  */
 import { loadEnv } from "./loadEnv.mjs";
-import { enrichChunkForRetrieval, enrichDelayMs } from "./enrichChunk.mjs";
+import { enrichChunkForRetrieval, enrichDelayMs, retrievalEmbeddingInputFromChunkContent } from "./enrichChunk.mjs";
 import { embedWithOllamaBatched } from "./embed.mjs";
 import {
   chunkText,
@@ -24,12 +26,13 @@ const CHUNK_SIZE = parseInt(process.env.CHUNK_SIZE || "800", 10);
 const CHUNK_OVERLAP = parseInt(process.env.CHUNK_OVERLAP || "200", 10);
 
 function parseArgs(argv) {
-  const args = { dryRun: false, processAll: false, rebuild: false, limit: null };
+  const args = { dryRun: false, processAll: false, rebuild: false, limit: null, backfillEmbeddingPerguntas: false };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === "--dry-run") args.dryRun = true;
     if (a === "--all") args.processAll = true;
     if (a === "--rebuild") args.rebuild = true;
+    if (a === "--backfill-embedding-perguntas") args.backfillEmbeddingPerguntas = true;
     if (a === "--limit" && argv[i + 1]) args.limit = parseInt(argv[++i], 10);
     if (a.startsWith("--limit=")) args.limit = parseInt(a.split("=")[1], 10);
   }
@@ -128,7 +131,7 @@ async function fetchExistingDocumentsForFile(supabase, fileId) {
     () =>
       supabase
         .from("documents")
-        .select("id, content, embedding, metadata")
+        .select("id, content, embedding, embedding_perguntas, metadata")
         .eq("file_id", fid)
         .order("id", { ascending: true }),
     { label: "fetch documents" },
@@ -140,13 +143,67 @@ async function fetchExistingDocumentsForFile(supabase, fileId) {
 async function countMissingEmbeddings(supabase, fileId) {
   const fid = String(fileId);
   const { data, error } = await withRetry(
-    () => supabase.from("documents").select("id, embedding").eq("file_id", fid),
+    () => supabase.from("documents").select("id, embedding, embedding_perguntas").eq("file_id", fid),
     { label: "check embeddings" },
   );
   if (error) throw error;
   const rows = data || [];
   const missing = rows.filter((r) => !r.embedding || (Array.isArray(r.embedding) && r.embedding.length === 0)).length;
   return { total: rows.length, missing };
+}
+
+function embedPerguntasColumnEnabled() {
+  const v = String(process.env.DOCUMENT_PROCESSOR_EMBED_PERGUNTAS ?? "1").trim().toLowerCase();
+  return v !== "0" && v !== "false" && v !== "no";
+}
+
+/**
+ * Preenche `embedding_perguntas` para linhas que já têm `embedding` (retrospetivo).
+ * @returns {Promise<number>} número de linhas atualizadas
+ */
+async function backfillEmbeddingPerguntas(supabase, { limit } = {}) {
+  const batchSize = Math.min(96, Math.max(8, parseInt(process.env.BACKFILL_PERGUNTAS_EMBED_BATCH || "24", 10)));
+  let processed = 0;
+  console.log(
+    `[document-processor] --backfill-embedding-perguntas (batch=${batchSize}${limit != null && limit > 0 ? `, limit=${limit}` : ""})`,
+  );
+  for (;;) {
+    if (limit != null && limit > 0 && processed >= limit) break;
+    const take = limit != null && limit > 0 ? Math.min(batchSize, limit - processed) : batchSize;
+    const { data, error } = await withRetry(
+      () =>
+        supabase
+          .from("documents")
+          .select("id, content")
+          .not("embedding", "is", null)
+          .is("embedding_perguntas", null)
+          .limit(take),
+      { label: "backfill fetch documents" },
+    );
+    if (error) throw error;
+    const rows = data || [];
+    if (rows.length === 0) {
+      console.log(`[document-processor] backfill concluído: total atualizados=${processed}`);
+      return processed;
+    }
+    const texts = rows.map((r) => retrievalEmbeddingInputFromChunkContent(r.content));
+    const embeddings = await withRetry(() => embedWithOllamaBatched(texts), { label: "backfill ollama embed" });
+    if (!Array.isArray(embeddings) || embeddings.length !== rows.length) {
+      throw new Error(`backfill: embeddings ${embeddings?.length} !== rows ${rows.length}`);
+    }
+    for (let i = 0; i < rows.length; i++) {
+      const emb = embeddings[i];
+      if (!emb?.length) continue;
+      const { error: upErr } = await withRetry(
+        () => supabase.from("documents").update({ embedding_perguntas: emb }).eq("id", rows[i].id),
+        { label: "backfill update doc" },
+      );
+      if (upErr) throw upErr;
+      processed++;
+    }
+    console.log(`   backfill +${rows.length} (acumulado=${processed})`);
+  }
+  return processed;
 }
 
 const PDF_SELECT = "id, file_id, edital_id, caminho_storage, is_processed";
@@ -255,10 +312,36 @@ async function loadProcessingQueue(supabase, { processAll, limit }) {
   return limit != null && limit > 0 ? deduped.slice(0, limit) : deduped;
 }
 
-async function main() {
-  const { dryRun, processAll, rebuild, limit } = parseArgs(process.argv.slice(2));
+function ecsWorkerLoopEnabled() {
+  const v = String(process.env.ECS_WORKER_LOOP || "").trim().toLowerCase();
+  return v === "1" || v === "true" || v === "yes";
+}
+
+function workerIdleMsAfterWork() {
+  const n = parseInt(process.env.WORKER_IDLE_MS_AFTER_WORK || "8000", 10);
+  return Number.isFinite(n) ? Math.max(0, n) : 8000;
+}
+
+function workerIdleMsNoWork() {
+  const n = parseInt(process.env.WORKER_IDLE_MS_NO_WORK || "120000", 10);
+  return Number.isFinite(n) ? Math.max(0, n) : 120000;
+}
+
+/**
+ * Um ciclo de fila (pendentes + opcional --all/--rebuild via argv).
+ * @returns {{ queueLength: number }}
+ */
+async function runDocumentProcessor(cliArgs = process.argv.slice(2)) {
+  const { dryRun, processAll, rebuild, limit, backfillEmbeddingPerguntas: runBackfillEmbeddingPerguntas } =
+    parseArgs(cliArgs);
   const startedAt = Date.now();
   const supabase = getSupabase();
+
+  if (runBackfillEmbeddingPerguntas) {
+    const n = await backfillEmbeddingPerguntas(supabase, { limit });
+    console.log(`\n[document-processor] backfill embedding_perguntas: ${n} documento(s) atualizado(s).`);
+    return { queueLength: 0 };
+  }
 
   console.log("[document-processor] PDF → chunks → enrich (process-edital context) → embed → documents");
   console.log(`   chunk size=${CHUNK_SIZE} overlap=${CHUNK_OVERLAP} enrich=${process.env.ENRICH_CHUNKS ?? "1"}`);
@@ -385,14 +468,16 @@ async function main() {
       for (let ci = 0; ci < chunks.length; ci++) {
         if (delayEnrich > 0 && ci > 0) await sleep(delayEnrich);
         const plain = chunks[ci];
-        const { embeddingText, enrichment, enrichFailed } = await enrichChunkForRetrieval(plain, { chunkIndex: ci });
+        const { embeddingText, embeddingRetrievalText, enrichment, enrichFailed } = await enrichChunkForRetrieval(plain, {
+          chunkIndex: ci,
+        });
         if (ci > 0 && ci % 50 === 0) {
           console.log(`      🧩 enrich progress: ${ci}/${chunks.length} chunks (total=${msSince(pdfT0)}ms)`);
         }
         enrichedRows.push({
           file_id: String(fileId),
           content: embeddingText,
-          // embedding preenchido depois (antes do insert)
+          retrievalEmbedInput: embeddingRetrievalText,
           metadata: {
             file_id: String(fileId),
             edital_id: editalIdSafe,
@@ -407,13 +492,26 @@ async function main() {
       console.log(`      🧩 enrich done chunks=${enrichedRows.length} (t=${msSince(tEnrich0)}ms, total=${msSince(pdfT0)}ms)`);
 
       let embeddingsForInsert;
+      let embeddingsPerguntasForInsert;
+      const embedPerg = embedPerguntasColumnEnabled();
       try {
         const tEmb0 = Date.now();
-        console.log(`      🧠 embedding (pre-insert) start chunks=${enrichedRows.length}`);
-        embeddingsForInsert = await withRetry(
-          () => embedWithOllamaBatched(enrichedRows.map((r) => r.content)),
-          { label: "ollama embed (pre-insert)" },
+        const textsFull = enrichedRows.map((r) => r.content);
+        console.log(
+          `      🧠 embedding (pre-insert) start chunks=${enrichedRows.length} perguntas_col=${embedPerg ? "sim" : "não"}`,
         );
+        if (embedPerg) {
+          const textsRetrieval = enrichedRows.map((r) => r.retrievalEmbedInput);
+          const [full, perg] = await Promise.all([
+            withRetry(() => embedWithOllamaBatched(textsFull), { label: "ollama embed full (pre-insert)" }),
+            withRetry(() => embedWithOllamaBatched(textsRetrieval), { label: "ollama embed perguntas (pre-insert)" }),
+          ]);
+          embeddingsForInsert = full;
+          embeddingsPerguntasForInsert = perg;
+        } else {
+          embeddingsForInsert = await withRetry(() => embedWithOllamaBatched(textsFull), { label: "ollama embed (pre-insert)" });
+          embeddingsPerguntasForInsert = null;
+        }
         console.log(
           `      🧠 embedding (pre-insert) ok n=${embeddingsForInsert?.length ?? 0} (t=${msSince(tEmb0)}ms, total=${msSince(pdfT0)}ms)`,
         );
@@ -430,6 +528,15 @@ async function main() {
         failDelta++;
         return { chunksDelta, okDelta, failDelta };
       }
+      if (
+        embedPerg &&
+        (!Array.isArray(embeddingsPerguntasForInsert) || embeddingsPerguntasForInsert.length !== enrichedRows.length)
+      ) {
+        console.warn(`   ⚠️ embeddings perguntas ${embeddingsPerguntasForInsert?.length ?? 0} ≠ chunks ${enrichedRows.length}`);
+        if (!(await isPdfFullyIndexed(supabase, fileId))) await markPdfProcessingState(supabase, pdf, false);
+        failDelta++;
+        return { chunksDelta, okDelta, failDelta };
+      }
 
       const tDel0 = Date.now();
       await withRetry(() => supabase.from("documents").delete().eq("file_id", String(fileId)), {
@@ -437,10 +544,24 @@ async function main() {
       });
       console.log(`      🧹 delete old chunks ok (t=${msSince(tDel0)}ms, total=${msSince(pdfT0)}ms)`);
 
-      const rowsToInsert = enrichedRows.map((r, idx) => ({ ...r, embedding: embeddingsForInsert[idx] }));
+      const rowsToInsert = enrichedRows.map((r, idx) => {
+        const row = {
+          file_id: r.file_id,
+          content: r.content,
+          metadata: r.metadata,
+          embedding: embeddingsForInsert[idx],
+        };
+        if (embedPerg && Array.isArray(embeddingsPerguntasForInsert) && embeddingsPerguntasForInsert[idx]?.length) {
+          row.embedding_perguntas = embeddingsPerguntasForInsert[idx];
+        } else {
+          row.embedding_perguntas = null;
+        }
+        return row;
+      });
       const tIns0 = Date.now();
       const { data: inserted, error: insertErr } = await withRetry(
-        () => supabase.from("documents").insert(rowsToInsert).select("id, content, embedding, metadata"),
+        () =>
+          supabase.from("documents").insert(rowsToInsert).select("id, content, embedding, embedding_perguntas, metadata"),
         { label: "insert chunks (with embedding)" },
       );
       console.log(`      📥 insert ok rows=${inserted?.length ?? 0} (t=${msSince(tIns0)}ms, total=${msSince(pdfT0)}ms)`);
@@ -506,6 +627,36 @@ async function main() {
       console.log(`      🧷 update embedding done ok=${ok}/${embedTargets.length} (t=${msSince(tUpd0)}ms)`);
     }
 
+    if (embedPerguntasColumnEnabled() && ok !== -1) {
+      const missPerg = rows.filter((r) => {
+        const hasMain = r.embedding && (Array.isArray(r.embedding) ? r.embedding.length > 0 : true);
+        const hasP =
+          r.embedding_perguntas &&
+          (Array.isArray(r.embedding_perguntas) ? r.embedding_perguntas.length > 0 : false);
+        return Boolean(hasMain && !hasP && typeof r.content === "string" && r.content.length > 0);
+      });
+      if (missPerg.length > 0) {
+        try {
+          const texts = missPerg.map((r) => retrievalEmbeddingInputFromChunkContent(r.content));
+          const embs = await withRetry(() => embedWithOllamaBatched(texts), { label: "ollama embed perguntas (reuse)" });
+          if (Array.isArray(embs) && embs.length === missPerg.length) {
+            for (let j = 0; j < missPerg.length; j++) {
+              const emb = embs[j];
+              if (!emb?.length) continue;
+              const { error: pe } = await withRetry(
+                () => supabase.from("documents").update({ embedding_perguntas: emb }).eq("id", missPerg[j].id),
+                { label: "update embedding_perguntas" },
+              );
+              if (pe) console.warn(`   ⚠️ update embedding_perguntas:`, pe.message);
+            }
+            console.log(`      🧠 embedding_perguntas (reuse) ok n=${missPerg.length} (total=${msSince(pdfT0)}ms)`);
+          }
+        } catch (e) {
+          console.warn(`   ⚠️ embedding_perguntas reuse skip:`, e instanceof Error ? e.message : e);
+        }
+      }
+    }
+
     if (ok === -1) {
       if (!(await isPdfFullyIndexed(supabase, fileId))) await markPdfProcessingState(supabase, pdf, false);
       return { chunksDelta, okDelta, failDelta };
@@ -560,6 +711,32 @@ async function main() {
   } catch (e) {
     console.warn("[document-processor] warn: EventBridge:", e instanceof Error ? e.message : e);
   }
+
+  return { queueLength: toProcess.length };
+}
+
+async function main() {
+  const argv = process.argv.slice(2);
+  if (ecsWorkerLoopEnabled() && argv.length === 0) {
+    let iter = 0;
+    console.log(
+      `[document-processor] ECS_WORKER_LOOP=1 — execução contínua. Idle após trabalho=${workerIdleMsAfterWork()}ms; fila vazia=${workerIdleMsNoWork()}ms`,
+    );
+    while (true) {
+      iter += 1;
+      console.log(`\n[document-processor] worker iter=${iter} @ ${new Date().toISOString()}`);
+      try {
+        const { queueLength } = await runDocumentProcessor([]);
+        const idle = queueLength === 0 ? workerIdleMsNoWork() : workerIdleMsAfterWork();
+        if (idle > 0) await sleep(idle);
+      } catch (e) {
+        console.error("[document-processor] worker iter erro:", e);
+        await sleep(workerIdleMsNoWork());
+      }
+    }
+  }
+
+  await runDocumentProcessor(argv);
 }
 
 main().catch((e) => {

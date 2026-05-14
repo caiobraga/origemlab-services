@@ -4,6 +4,15 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import { createSupabase } from "../lib/supabase";
 import { getMaxContextChars, ollamaGenerate } from "../lib/ollama";
 
+type FieldEvidence = {
+  source: "topk" | "window" | "bulk";
+  snippet: string;
+  document_ids?: string[];
+  document_id?: string | null;
+  chunk_index?: number | null;
+  window_index?: number | null;
+};
+
 type EditalRow = {
   id: string;
   numero: string | null;
@@ -21,6 +30,7 @@ type EditalRow = {
   fonte: string;
   link: string | null;
   informacoes_processadas_em: string | null;
+  informacoes_extracao_evidence?: Record<string, FieldEvidence> | null;
 
   valor_projeto: string | null;
   prazo_inscricao: string | null;
@@ -191,20 +201,34 @@ async function fetchEditalPdfKeys(supabase: SupabaseClient, editalId: string): P
 }
 
 function asEmbedding(v: any): number[] | null {
-  if (!v) return null;
-  if (Array.isArray(v) && v.length > 0) return v.map((x) => Number(x));
-  if (typeof v === "string") {
-    const s = v.trim();
+  if (v == null || v === "") return null;
+
+  let cur: any = v;
+
+  if (typeof cur === "string") {
+    const s = cur.trim();
+    if (!s) return null;
     if (s.startsWith("[") && s.endsWith("]")) {
       try {
-        const arr = JSON.parse(s);
-        if (Array.isArray(arr) && arr.length > 0) return arr.map((x) => Number(x));
+        cur = JSON.parse(s);
       } catch {
-        // ignore
+        return null;
       }
+    } else {
+      return null;
     }
   }
-  return null;
+
+  while (Array.isArray(cur) && cur.length === 1 && Array.isArray(cur[0])) {
+    cur = cur[0];
+  }
+
+  if (!Array.isArray(cur) || cur.length === 0) return null;
+
+  const nums = cur.map((x) => Number(x));
+  if (nums.length < 4) return null;
+  if (nums.some((n) => !Number.isFinite(n))) return null;
+  return nums;
 }
 
 function sortDocumentRows(rows: any[]): any[] {
@@ -226,16 +250,12 @@ function joinDocumentRows(rows: any[]): string {
     .join("\n\n");
 }
 
-function hasNonEmptyContextText(s: string): boolean {
-  return Boolean(String(s || "").trim());
-}
-
-async function fetchDocumentsContext(
+async function fetchRawDocumentRows(
   supabase: SupabaseClient,
   editalId: string,
   fileIds: string[],
-): Promise<{ text: string; chunks: number; withEmbedding: number }> {
-  const chunkLimit = Math.max(50, parseInt(process.env.VALIDATE_DOCUMENTS_LIMIT || "400", 10) || 400);
+): Promise<any[]> {
+  const chunkLimit = Math.max(200, parseInt(process.env.VALIDATE_DOCUMENTS_LIMIT || "3000", 10) || 3000);
   let rows: any[] = [];
 
   if (fileIds.length > 0) {
@@ -258,12 +278,128 @@ async function fetchDocumentsContext(
     rows = (data ?? []).filter((r: any) => typeof r?.content === "string" && r.content.trim().length > 0);
   }
 
-  const withEmbedding = rows.filter((r: any) => asEmbedding(r.embedding) != null);
-  const selected = withEmbedding.length > 0 ? withEmbedding : rows;
-  const joined = joinDocumentRows(sortDocumentRows(selected));
-  const maxChars = getMaxContextChars();
-  const text = joined.length > maxChars ? joined.slice(0, maxChars) : joined;
-  return { text, chunks: selected.length, withEmbedding: withEmbedding.length };
+  return rows;
+}
+
+function hasNonEmptyContextText(s: string): boolean {
+  return Boolean(String(s || "").trim());
+}
+
+function buildWideAuditContextFromRows(rows: any[]): string {
+  const joined = joinDocumentRows(sortDocumentRows(rows));
+  const cap = Math.max(
+    4000,
+    parseInt(process.env.VALIDATE_AUDIT_MAX_CONTEXT_CHARS || String(getMaxContextChars()), 10) || getMaxContextChars(),
+  );
+  return joined.length > cap ? joined.slice(0, cap) : joined;
+}
+
+function makeAuditPrompt(
+  field: FieldKey,
+  edital: EditalRow,
+  before: any,
+  evidence: FieldEvidence | undefined,
+): string {
+  const beforeText = before === null || before === undefined ? "null" : JSON.stringify(before);
+  const idsLine =
+    evidence && (evidence.document_ids?.length || evidence.document_id)
+      ? `\nIDs em documents (linhas da extração): ${(evidence.document_ids?.length ? evidence.document_ids : [evidence.document_id]).filter(Boolean).join(", ")}`
+      : "";
+  const evidenceBlock =
+    evidence && typeof evidence.snippet === "string" && evidence.snippet.trim()
+      ? `Trecho usado na extração (origem: ${evidence.source}):\n${evidence.snippet.slice(0, 6000)}${idsLine}`
+      : "Não há trecho de evidência registrado (extração antiga). Use somente o documento abaixo.";
+
+  return [
+    "Você audita um valor já extraído de um edital.",
+    "Tarefas:",
+    "(1) Percorra o DOCUMENTO e verifique se existe, em outra parte do texto, informação mais específica, completa ou claramente melhor para o MESMO campo (não confunda com outros campos).",
+    "(2) Verifique se o valor está correto e sustentado pelo texto; se estiver vago, contraditório ou sem suporte, corrija ou anule.",
+    "Decisão em _audit.decision:",
+    '- "accept": o valor está adequado (pode devolver equivalente).',
+    '- "replace": há informação melhor no documento — preencha o campo com o melhor valor suportado.',
+    '- "reject": não há suporte no documento — use null no campo.',
+    "Não invente dados que não apareçam no documento.",
+    "",
+    `Edital: ${edital.numero || "N/A"} — ${edital.titulo}`,
+    `Fonte: ${edital.fonte}`,
+    "",
+    `Campo: ${field}`,
+    `Valor atual (extração): ${beforeText}`,
+    "",
+    evidenceBlock,
+    "",
+    "Orientação do campo:",
+    FIELD_PRESENTATION_GUIDANCE[field],
+    "",
+    "Formato de saída: APENAS JSON válido (uma linha se possível) com:",
+    `- a chave do campo "${field}" com o valor final (tipo correto: string, boolean, objeto timeline, ou null)`,
+    '- a chave "_audit" com objeto { "decision": "accept"|"replace"|"reject", "reason": "breve, PT-BR" }',
+    `Exemplo de chaves: "${field}" e "_audit".`,
+    `Referência de tipo/estrutura: ${jsonExample(field)}`,
+  ].join("\n");
+}
+
+async function callAuditForField(
+  field: FieldKey,
+  edital: EditalRow,
+  before: any,
+  evidence: FieldEvidence | undefined,
+  wideCtx: string,
+): Promise<{ ok: boolean; value: any; raw: string; audit: { decision: string; reason: string } }> {
+  const prompt = makeAuditPrompt(field, edital, before, evidence);
+  const rawText = extractJsonBlock(await ollamaGenerate([prompt, "", "DOCUMENTO:", wideCtx || "(vazio)"].join("\n")));
+  const json = safeJsonParse(rawText);
+  const audit = json && typeof json === "object" ? (json as any)._audit : null;
+  const decision = typeof audit?.decision === "string" ? String(audit.decision).toLowerCase() : "";
+  const reason = typeof audit?.reason === "string" ? audit.reason : "";
+
+  let candidate = json && typeof json === "object" ? (json as any)[field] : undefined;
+  if (decision === "reject") candidate = null;
+  if (candidate === undefined) {
+    return {
+      ok: false,
+      value: null,
+      raw: rawText,
+      audit: { decision: decision || "unknown", reason: reason || "missing_field_in_json" },
+    };
+  }
+
+  const checked = validateFieldValue(field, candidate);
+  const ok = json != null && checked.ok;
+  return {
+    ok,
+    value: checked.normalized,
+    raw: rawText,
+    audit: { decision: decision || (checked.ok ? "accept" : "unknown"), reason },
+  };
+}
+
+async function polishFreeTextField(
+  field: FieldKey,
+  text: string,
+  edital: Pick<EditalRow, "numero" | "titulo" | "fonte">,
+): Promise<{ text: string; raw: string }> {
+  const prompt = [
+    "Você melhora a redação do texto abaixo para publicação em portal de editais, com clareza e tom neutro.",
+    "Preserve números, datas, valores monetários e nomes próprios exatamente quando forem factuais no texto original.",
+    "Não acrescente fatos novos. Se já estiver claro, devolva com ajustes mínimos de gramática e pontuação.",
+    "",
+    `Edital: ${edital.numero || "N/A"} — ${edital.titulo} (${edital.fonte || "N/A"})`,
+    `Campo: ${field}`,
+    "",
+    "Texto:",
+    text,
+    "",
+    'Responda APENAS JSON válido: {"text":"..."}',
+  ].join("\n");
+
+  const rawText = extractJsonBlock(await ollamaGenerate(prompt));
+  const json = safeJsonParse(rawText);
+  const out = json && typeof json === "object" && typeof (json as any).text === "string" ? String((json as any).text) : "";
+  const trimmed = out.replace(/\s+/g, " ").trim();
+  if (!trimmed) return { text, raw: rawText };
+  return { text: trimmed, raw: rawText };
 }
 
 function normalizeTimelineEstimada(value: any): { fases: Array<Record<string, string | null>> } | null {
@@ -350,32 +486,12 @@ const FIELD_PRESENTATION_GUIDANCE: Record<FieldKey, string> = {
   is_company:
     "Valide se o público-alvo inclui empresas/startups como proponentes elegíveis. true/false/null (null se não houver evidência explícita).",
   sobre_programa:
-    "Valide e melhore um parágrafo curto e objetivo sobre o programa/objetivo do edital, fiel ao texto.",
+    "Valide um parágrafo curto e objetivo sobre o programa/objetivo do edital, fiel ao texto (a redação final será refinada numa etapa separada).",
   criterios_elegibilidade:
     "Valide e padronize critérios/requisitos de elegibilidade em texto corrido (ou linhas separadas por \\n) com linguagem fiel ao edital. Não invente.",
   timeline_estimada:
     "Valide se existe cronograma/timeline no edital. Se sim, normalize para o formato do site (fases com datas/prazos quando existirem). Se não houver, retorne null.",
 };
-
-function makeValidateAndImproveCurrentPrompt(field: FieldKey, edital: EditalRow, currentValue: any): string {
-  const currentText = currentValue == null ? "null" : JSON.stringify(currentValue);
-  return [
-    "Você é um auditor/normalizador de dados de editais.",
-    "Use SOMENTE o conteúdo dos documentos anexados.",
-    "Objetivo: validar se o VALOR ATUAL (do banco) tem evidência explícita no edital. Se tiver, melhore/padronize sem mudar o significado. Se não tiver evidência (ou estiver contraditório), retorne null.",
-    "Não extraia campos novos nem responda perguntas de extração; trabalhe apenas com o valor atual.",
-    "",
-    `Edital: ${edital.numero || "N/A"} — ${edital.titulo}`,
-    `Fonte: ${edital.fonte}`,
-    "",
-    `Campo: ${field}`,
-    `Valor atual (banco): ${currentText}`,
-    FIELD_PRESENTATION_GUIDANCE[field],
-    "",
-    "Formato de saída obrigatório: APENAS JSON válido.",
-    `Exemplo: ${jsonExample(field)}`,
-  ].join("\n");
-}
 
 function isTimelineEstimadaSiteShapeOk(v: any): boolean {
   if (v === null) return true;
@@ -424,14 +540,6 @@ function validateFieldValue(field: FieldKey, value: any): { ok: boolean; normali
   return { ok: true, normalized: normalizeMaybeString(value) };
 }
 
-async function callJsonForField(field: FieldKey, prompt: string, ctx: string): Promise<{ ok: boolean; value: any; raw: string }> {
-  const rawText = extractJsonBlock(await ollamaGenerate([prompt, "", "CONTEÚDO:", ctx || "(vazio)"].join("\n")));
-  const json = safeJsonParse(rawText);
-  const value = json && typeof json === "object" ? (json as any)[field] : undefined;
-  const checked = validateFieldValue(field, value);
-  return { ok: json != null && value !== undefined && checked.ok, value: checked.normalized, raw: rawText };
-}
-
 async function updateOriginalEditalField(supabase: SupabaseClient, editalId: string, field: FieldKey, value: any): Promise<void> {
   const patch: any = { [field]: value };
   const { error } = await supabase.from("editais").update(patch).eq("id", editalId);
@@ -448,12 +556,20 @@ async function validateOneEdital(
   }
 
   const fileIds = await fetchEditalPdfKeys(supabase, edital.id);
-  const ctxInfo = await fetchDocumentsContext(supabase, edital.id, fileIds);
-  const ctx = ctxInfo.text;
+  const rowsRaw = await fetchRawDocumentRows(supabase, edital.id, fileIds);
+  const wideCtx = buildWideAuditContextFromRows(rowsRaw);
+  const chunksTotal = rowsRaw.length;
+  const withEmbReport = rowsRaw.filter((r: any) => asEmbedding(r.embedding) != null).length;
 
-  if (!hasNonEmptyContextText(ctx) || ctxInfo.chunks === 0) {
+  if (!hasNonEmptyContextText(wideCtx)) {
     return { inserted: false, reasons: ["sem_contexto_documents"] };
   }
+
+  const evidenceMap =
+    edital.informacoes_extracao_evidence && typeof edital.informacoes_extracao_evidence === "object" && !Array.isArray(edital.informacoes_extracao_evidence)
+      ? edital.informacoes_extracao_evidence
+      : {};
+  const skipPolish = String(process.env.VALIDATE_SKIP_POLISH || "").trim() === "1";
 
   const reportFields: Record<string, any> = {};
 
@@ -466,12 +582,28 @@ async function validateOneEdital(
       continue;
     }
 
-    const prompt = makeValidateAndImproveCurrentPrompt(field, edital, before);
-    const validated = await callJsonForField(field, prompt, ctx);
-    const finalValue = validated.ok ? validated.value : null;
+    const evidence = evidenceMap[field] as FieldEvidence | undefined;
+    const audited = await callAuditForField(field, edital, before, evidence, wideCtx);
+    let finalValue = audited.ok ? audited.value : null;
+
+    let polishMeta: { applied: boolean; raw?: string; note?: string } = { applied: false, note: "skipped" };
+    if (audited.ok && finalValue != null && fieldType(field) === "string" && !skipPolish) {
+      const s = typeof finalValue === "string" ? finalValue : null;
+      if (s && s.length > 0) {
+        const polished = await polishFreeTextField(field, s, edital);
+        finalValue = polished.text;
+        polishMeta = { applied: true, raw: polished.raw };
+      } else {
+        polishMeta = { applied: false, note: "empty_string" };
+      }
+    } else if (audited.ok && finalValue != null && fieldType(field) !== "string") {
+      polishMeta = { applied: false, note: "not_string_field" };
+    } else if (skipPolish) {
+      polishMeta = { applied: false, note: "VALIDATE_SKIP_POLISH=1" };
+    }
 
     let status = "kept";
-    if (!validated.ok) status = "invalid";
+    if (!audited.ok) status = "invalid";
     else if (finalValue === null && before !== null) status = "cleared";
     else if (JSON.stringify(before) !== JSON.stringify(finalValue)) status = "corrected";
 
@@ -479,9 +611,19 @@ async function validateOneEdital(
       status,
       before: field === "timeline_estimada" ? normalizeTimelineEstimada(before) : before,
       after: field === "timeline_estimada" ? normalizeTimelineEstimada(finalValue) : finalValue,
+      audit: { ...audited.audit, raw: audited.raw },
+      polish: polishMeta,
+      extraction_evidence: evidence
+        ? {
+            source: evidence.source,
+            document_id: evidence.document_id ?? null,
+            document_ids: evidence.document_ids ?? (evidence.document_id ? [evidence.document_id] : undefined),
+            snippet_preview: String(evidence.snippet || "").slice(0, 400),
+          }
+        : null,
     };
 
-    if (!validated.ok) continue;
+    if (!audited.ok) continue;
 
     current[field] = finalValue;
     const shouldNull = finalValue === null && before !== null && before !== undefined;
@@ -519,10 +661,11 @@ async function validateOneEdital(
     extracted_fields: listNonNullExtractedFields(edital),
     context: {
       file_ids: fileIds.length,
-      chunks: ctxInfo.chunks,
-      chunks_with_embedding: ctxInfo.withEmbedding,
-      ctx_chars: ctx.length,
+      chunks: chunksTotal,
+      chunks_with_embedding: withEmbReport,
+      audit_ctx_chars: wideCtx.length,
       ollama: true,
+      pipeline: "audit_full_document_then_polish_strings",
     },
     presentable: true,
     fields: reportFields,
@@ -535,7 +678,22 @@ async function validateOneEdital(
   return { inserted: true, reasons: [] };
 }
 
-async function main() {
+function ecsWorkerLoopEnabled(): boolean {
+  const v = String(process.env.ECS_WORKER_LOOP || "").trim().toLowerCase();
+  return v === "1" || v === "true" || v === "yes";
+}
+
+function workerIdleMsAfterWork(): number {
+  const n = parseInt(process.env.WORKER_IDLE_MS_AFTER_WORK || "8000", 10);
+  return Number.isFinite(n) ? Math.max(0, n) : 8000;
+}
+
+function workerIdleMsNoWork(): number {
+  const n = parseInt(process.env.WORKER_IDLE_MS_NO_WORK || "120000", 10);
+  return Number.isFinite(n) ? Math.max(0, n) : 120000;
+}
+
+async function runValidateBatch(): Promise<{ hadWork: boolean }> {
   const supabase = createSupabase();
 
   const limitRaw = parseInt(process.env.VALIDATE_EDITAIS_LIMIT || "0", 10);
@@ -551,9 +709,10 @@ async function main() {
   let fail = 0;
   let skipped = 0;
   let seen = 0;
+  let hadPotentialWork = false;
 
   const selectCols =
-    "id,numero,titulo,descricao,processado_em,criado_em,atualizado_em,data_publicacao,data_encerramento,status,valor,area,orgao,fonte,link,informacoes_processadas_em,valor_projeto,prazo_inscricao,localizacao,vagas,is_researcher,is_company,sobre_programa,criterios_elegibilidade,timeline_estimada";
+    "id,numero,titulo,descricao,processado_em,criado_em,atualizado_em,data_publicacao,data_encerramento,status,valor,area,orgao,fonte,link,informacoes_processadas_em,informacoes_extracao_evidence,valor_projeto,prazo_inscricao,localizacao,vagas,is_researcher,is_company,sobre_programa,criterios_elegibilidade,timeline_estimada";
 
   for (let offset = 0; seen < totalLimit; offset += batchSize) {
     const remaining = Number.isFinite(totalLimit) ? Math.max(0, totalLimit - seen) : batchSize;
@@ -569,6 +728,7 @@ async function main() {
 
     const page = (pageData ?? []) as EditalRow[];
     if (page.length === 0) break;
+    hadPotentialWork = true;
 
     for (const edital of page) {
       if (seen >= totalLimit) break;
@@ -598,7 +758,31 @@ async function main() {
   }
 
   console.log(`\n✅ Concluído. Sucesso: ${ok} | Pulados: ${skipped} | Falhas: ${fail}`);
-  if (fail > 0) process.exitCode = 1;
+  if (fail > 0 && !ecsWorkerLoopEnabled()) process.exitCode = 1;
+  return { hadWork: hadPotentialWork };
+}
+
+async function main() {
+  if (ecsWorkerLoopEnabled()) {
+    let iter = 0;
+    console.log(
+      `🔄 ECS_WORKER_LOOP=1 — validate-edital em ciclo contínuo. Idle após lote com linhas=${workerIdleMsAfterWork()}ms; sem fila=${workerIdleMsNoWork()}ms`,
+    );
+    while (true) {
+      iter += 1;
+      console.log(`\n🔄 worker iter=${iter} @ ${new Date().toISOString()}`);
+      try {
+        const { hadWork } = await runValidateBatch();
+        const idle = hadWork ? workerIdleMsAfterWork() : workerIdleMsNoWork();
+        if (idle > 0) await new Promise((r) => setTimeout(r, idle));
+      } catch (e) {
+        console.error("❌ worker iter:", e);
+        await new Promise((r) => setTimeout(r, workerIdleMsNoWork()));
+      }
+    }
+  }
+
+  await runValidateBatch();
 }
 
 main().catch((e) => {

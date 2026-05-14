@@ -1,5 +1,6 @@
 import { createClient } from "@supabase/supabase-js";
 import path from "node:path";
+import { fetchWithScraperAgent } from "./fetchAgent.mjs";
 import { describeFetchError } from "./httpFetch.mjs";
 
 const STORAGE_BUCKET = "edital-pdfs";
@@ -32,7 +33,7 @@ async function fetchPdf(url, timeoutMs = 45000) {
   const controller = new AbortController();
   const t = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const res = await fetch(url, {
+    const res = await fetchWithScraperAgent(url, {
       method: "GET",
       redirect: "follow",
       signal: controller.signal,

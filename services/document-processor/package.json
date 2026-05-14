@@ -4,7 +4,8 @@
   "type": "module",
   "scripts": {
     "start": "node src/main.mjs",
-    "run": "node src/main.mjs"
+    "run": "node src/main.mjs",
+    "backfill:embedding-perguntas": "node src/main.mjs --backfill-embedding-perguntas"
   },
   "engines": {
     "node": ">=20"

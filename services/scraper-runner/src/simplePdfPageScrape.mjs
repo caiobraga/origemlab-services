@@ -1,4 +1,5 @@
 import * as cheerio from "cheerio";
+import { fetchWithScraperAgent } from "./fetchAgent.mjs";
 import { filterEditaisCurrentYear } from "./yearFilter.mjs";
 import { describeFetchError } from "./httpFetch.mjs";
 
@@ -18,7 +19,7 @@ export async function fetchHtml(url, timeoutMs = 90000) {
     const controller = new AbortController();
     const t = setTimeout(() => controller.abort(), timeoutMs);
     try {
-      const r = await fetch(url, {
+      const r = await fetchWithScraperAgent(url, {
         method: "GET",
         redirect: "follow",
         signal: controller.signal,
@@ -39,7 +40,8 @@ export async function fetchHtml(url, timeoutMs = 90000) {
         msg.includes("aborted") ||
         msg.includes("ECONNRESET") ||
         msg.includes("Connection reset") ||
-        msg.includes("Timeout");
+        msg.includes("Timeout") ||
+        msg.includes("ConnectTimeout");
       if (!retryable || attempt >= retries) break;
       await new Promise((r) => setTimeout(r, 400 * (attempt + 1)));
     } finally {
