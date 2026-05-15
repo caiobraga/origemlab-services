@@ -34,7 +34,7 @@ Parameters:
     Description: "Base URL do Ollama (ex.: http://host:11434)"
   OllamaModel:
     Type: String
-    Default: "llama3.2:3b"
+    Default: "qwen2.5:14b"
   OllamaTimeoutMs:
     Type: Number
     Default: 240000

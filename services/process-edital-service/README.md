@@ -27,3 +27,5 @@ O entrypoint é `src/api/processEditalInfo.ts` (carrega `../load-env` → `.env`
 ## Deploy (AWS)
 
 `deploy-process-edital-service.yml` → ECR `origemlab-process-edital-service` + `infrastructure/ecs-process-edital-service.yml`. Variáveis e modo **continuous** vs **scheduled**: [README do repositório](../../README.md).
+
+**Modelo Ollama no ECS:** o workflow envia sempre o parâmetro `OllamaModel` ao CloudFormation. Ordem: variável **`PROCESS_EDITAL_OLLAMA_MODEL`** (só este serviço) → senão **`OLLAMA_MODEL`** → senão default do template (`qwen2.5:14b`). Se definiste só `PROCESS_EDITAL_OLLAMA_MODEL` no GitHub, antes o deploy ignorava e deixava o default; garante também `ollama pull` do modelo no host.

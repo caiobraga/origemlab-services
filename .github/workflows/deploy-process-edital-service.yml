@@ -10,7 +10,8 @@
 #   SUPABASE_SERVICE_ROLE_KEY
 # Optional (same names as .env):
 #   OLLAMA_BASE_URL
-#   OLLAMA_MODEL
+#   OLLAMA_MODEL                         modelo no container (generate + embed fallback)
+#   PROCESS_EDITAL_OLLAMA_MODEL          se definida, sobrescreve OLLAMA_MODEL só neste deploy
 #   OLLAMA_TIMEOUT_MS
 #   OLLAMA_MAX_CONTEXT_CHARS
 #   PROCESS_EDITAL_LIMIT
@@ -93,6 +94,7 @@ jobs:
           SCHEDULE_EXPRESSION: ${{ vars.PROCESS_EDITAL_SCHEDULE_EXPRESSION }}
           CLUSTER_NAME: ${{ vars.PROCESS_EDITAL_CLUSTER_NAME }}
           OLLAMA_MODEL: ${{ vars.OLLAMA_MODEL }}
+          PROCESS_EDITAL_OLLAMA_MODEL: ${{ vars.PROCESS_EDITAL_OLLAMA_MODEL }}
           OLLAMA_TIMEOUT_MS: ${{ vars.OLLAMA_TIMEOUT_MS }}
           OLLAMA_MAX_CONTEXT_CHARS: ${{ vars.OLLAMA_MAX_CONTEXT_CHARS }}
           PROCESS_EDITAL_LIMIT: ${{ vars.PROCESS_EDITAL_LIMIT }}
@@ -133,9 +135,14 @@ jobs:
             "OrchestrationMode=${ORCH}"
           )
 
-          if [ -n "${OLLAMA_MODEL:-}" ]; then
-            OVERRIDES+=("OllamaModel=${OLLAMA_MODEL}")
-          fi
+          # Sempre enviar OllamaModel: se só PROCESS_EDITAL_OLLAMA_MODEL estiver no GitHub, o antigo
+          # `if [ -n OLLAMA_MODEL ]` omitia o override e o stack ficava no default CloudFormation (qwen2.5:14b).
+          _proc_ollama="$(printf '%s' "${PROCESS_EDITAL_OLLAMA_MODEL:-}" | tr -d '\r' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+          _shared_ollama="$(printf '%s' "${OLLAMA_MODEL:-}" | tr -d '\r' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+          _ollama_effective="${_proc_ollama:-${_shared_ollama}}"
+          _ollama_effective="${_ollama_effective:-qwen2.5:14b}"
+          OVERRIDES+=("OllamaModel=${_ollama_effective}")
+          echo "CloudFormation parameter OllamaModel=${_ollama_effective} (PROCESS_EDITAL_OLLAMA_MODEL > OLLAMA_MODEL > template default)"
           if [ -n "${OLLAMA_TIMEOUT_MS:-}" ]; then
             OVERRIDES+=("OllamaTimeoutMs=${OLLAMA_TIMEOUT_MS}")
           fi

@@ -143,7 +143,7 @@ Variáveis de repositório necessárias:
 | `PROCESS_EDITAL_SUPABASE_SECRET_ARN` | ARN do secret no Secrets Manager (JSON: `url`, `service_role_key`) |
 | `PROCESS_EDITAL_OLLAMA_BASE_URL` | URL interna do Ollama (`http://...:11434`) |
 
-Opcionais: `ECS_ORCHESTRATION_MODE` (`continuous` \| `scheduled`), `WORKER_IDLE_MS_AFTER_WORK`, `WORKER_IDLE_MS_NO_WORK`, `PROCESS_EDITAL_SCHEDULE_EXPRESSION`, `PROCESS_EDITAL_CLUSTER_NAME`, `PROCESS_EDITAL_OLLAMA_MODEL`, `PROCESS_EDITAL_OLLAMA_TIMEOUT_MS`, `PROCESS_EDITAL_OLLAMA_MAX_CONTEXT_CHARS`, `PROCESS_EDITAL_LIMIT` (máx. itens por execução do lote), `PROCESS_EDITAL_FETCH_PAGE_SIZE`, `PROCESS_EDITAL_ORDER` (`pending_first` \| `documents_chunks_only` \| `criado_em_desc`), `PROCESS_EDITAL_SKIP_CHUNK_ORDER_RPC`, `PROCESS_EDITAL_TOPK_EMBEDDING` (`perguntas` \| `full`), `PROCESS_EDITAL_ONLY_ID`, `PROCESS_EDITAL_DELAY_BETWEEN_EDITAIS_MS`.
+Opcionais: `ECS_ORCHESTRATION_MODE` (`continuous` \| `scheduled`), `WORKER_IDLE_MS_AFTER_WORK`, `WORKER_IDLE_MS_NO_WORK`, `PROCESS_EDITAL_SCHEDULE_EXPRESSION`, `PROCESS_EDITAL_CLUSTER_NAME`, **`OLLAMA_MODEL`** (modelo no container; usado em todos os serviços que partilham a variável), **`PROCESS_EDITAL_OLLAMA_MODEL`** (se definida, **substitui** `OLLAMA_MODEL` só neste deploy), `PROCESS_EDITAL_OLLAMA_TIMEOUT_MS`, `PROCESS_EDITAL_OLLAMA_MAX_CONTEXT_CHARS`, `PROCESS_EDITAL_LIMIT` (máx. itens por execução do lote), `PROCESS_EDITAL_FETCH_PAGE_SIZE`, `PROCESS_EDITAL_ORDER` (`pending_first` \| `documents_chunks_only` \| `criado_em_desc`), `PROCESS_EDITAL_SKIP_CHUNK_ORDER_RPC`, `PROCESS_EDITAL_TOPK_EMBEDDING` (`perguntas` \| `full`), `PROCESS_EDITAL_ONLY_ID`, `PROCESS_EDITAL_DELAY_BETWEEN_EDITAIS_MS`.
 
 ## services/validate-edital-service (ECS Fargate)
 
