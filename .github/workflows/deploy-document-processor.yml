@@ -168,3 +168,5 @@ jobs:
           fi
 
           echo "Stack ${STACK_NAME} updated; ProcessorImage=${IMAGE_URI}"
+
+          bash .github/scripts/ecs-force-rollout-after-cfn.sh "${STACK_NAME}" "${ORCH}"
