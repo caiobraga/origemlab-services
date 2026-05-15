@@ -26,9 +26,37 @@ export function getOllamaEmbedModel(): string {
   return getOllamaModel();
 }
 
+function clampTimeoutMs(n: number, fallback: number): number {
+  if (!Number.isFinite(n)) return fallback;
+  return Math.min(Math.max(n, 10_000), 1_800_000); /* 10s .. 30m */
+}
+
 export function getOllamaTimeoutMs(): number {
-  const n = parseInt(process.env.OLLAMA_TIMEOUT_MS || "240000", 10);
-  return Number.isFinite(n) ? Math.max(10_000, n) : 240_000;
+  const raw = parseInt(process.env.OLLAMA_TIMEOUT_MS || "600000", 10);
+  return clampTimeoutMs(raw, 600_000);
+}
+
+function getOllamaGenerateTimeoutMs(): number {
+  const g = parseInt(process.env.OLLAMA_GENERATE_TIMEOUT_MS || "", 10);
+  if (Number.isFinite(g) && g > 0) return clampTimeoutMs(g, getOllamaTimeoutMs());
+  return getOllamaTimeoutMs();
+}
+
+function getOllamaEmbedTimeoutMs(): number {
+  const e = parseInt(process.env.OLLAMA_EMBED_TIMEOUT_MS || "", 10);
+  if (Number.isFinite(e) && e > 0) return clampTimeoutMs(e, getOllamaTimeoutMs());
+  return getOllamaTimeoutMs();
+}
+
+function abortedToTimeoutHint(err: unknown, timeoutMs: number, label: string): Error {
+  const name = err instanceof Error ? err.name : "";
+  const msg = err instanceof Error ? err.message : String(err);
+  if (name === "AbortError" || /aborted|AbortError|The operation was aborted/i.test(msg)) {
+    return new Error(
+      `Ollama ${label} timed out after ${timeoutMs}ms (fetch aborted). For large prompts/models (e.g. qwen2.5:14b + many chunks), raise OLLAMA_TIMEOUT_MS or set OLLAMA_GENERATE_TIMEOUT_MS / OLLAMA_EMBED_TIMEOUT_MS in the ECS task env.`,
+    );
+  }
+  return err instanceof Error ? err : new Error(String(err));
 }
 
 export function getMaxContextChars(): number {
@@ -39,7 +67,7 @@ export function getMaxContextChars(): number {
 export async function ollamaGenerate(prompt: string): Promise<string> {
   const baseUrl = getOllamaBaseUrl();
   const model = getOllamaModel();
-  const timeoutMs = getOllamaTimeoutMs();
+  const timeoutMs = getOllamaGenerateTimeoutMs();
   const temperature = parseFloat(process.env.OLLAMA_TEMPERATURE || "0");
 
   const controller = new AbortController();
@@ -63,6 +91,8 @@ export async function ollamaGenerate(prompt: string): Promise<string> {
     }
     const json = JSON.parse(text) as OllamaGenerateResponse;
     return String(json.response || "").trim();
+  } catch (e) {
+    throw abortedToTimeoutHint(e, timeoutMs, "generate (/api/generate)");
   } finally {
     clearTimeout(t);
   }
@@ -71,7 +101,7 @@ export async function ollamaGenerate(prompt: string): Promise<string> {
 export async function ollamaEmbed(input: string): Promise<number[]> {
   const baseUrl = getOllamaBaseUrl();
   const model = getOllamaEmbedModel();
-  const timeoutMs = getOllamaTimeoutMs();
+  const timeoutMs = getOllamaEmbedTimeoutMs();
   const dimensionsRaw = (process.env.EMBED_DIMENSIONS || process.env.OLLAMA_EMBED_DIMENSIONS || "").trim();
   const dimensions = dimensionsRaw ? parseInt(dimensionsRaw, 10) : null;
 
@@ -96,6 +126,8 @@ export async function ollamaEmbed(input: string): Promise<number[]> {
     const emb = Array.isArray(json.embeddings) ? json.embeddings[0] : json.embedding;
     if (!Array.isArray(emb) || emb.length === 0) throw new Error("Ollama embed: empty embedding");
     return emb.map((x) => Number(x));
+  } catch (e) {
+    throw abortedToTimeoutHint(e, timeoutMs, "embed (/api/embed)");
   } finally {
     clearTimeout(t);
   }

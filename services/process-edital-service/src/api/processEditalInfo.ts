@@ -4,6 +4,7 @@ import "../load-env";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { createSupabase } from "../lib/supabase";
 import { getMaxContextChars, ollamaEmbed, ollamaGenerate } from "../lib/ollama";
+import { makeEventBase, publishDomainEvent } from "../lib/eventbridge";
 
 type FieldEvidence = {
   /** `topk` = contexto por similaridade de embeddings; `bulk` = amostra/junção de chunks sem score; `window` = varredura por janelas sobre o texto plano. */
@@ -814,6 +815,92 @@ async function updateEditalInfo(supabase: SupabaseClient, editalId: string, patc
   if (error) throw new Error(`Erro ao atualizar edital: ${error.message}`);
 }
 
+const NOTIFY_COMPONENT = "process-edital-service";
+
+function baseEditalProps(edital: Pick<EditalInfo, "id" | "numero" | "titulo" | "fonte">): Record<string, unknown> {
+  return {
+    edital_id: edital.id,
+    numero: edital.numero ?? null,
+    titulo: edital.titulo,
+    fonte: edital.fonte ?? null,
+  };
+}
+
+/** Notificação DomainEvent → EventBridge (Telegram / error-reporter). Falhas aqui não interrompem o batch. */
+async function notifyProcessSuccess(
+  edital: EditalInfo,
+  opts: { campos?: string[]; parcial?: boolean; stamp_only?: boolean },
+): Promise<void> {
+  try {
+    const campos = opts.campos ?? [];
+    const headline =
+      opts.parcial !== true ? (opts.stamp_only ? "Data de processamento atualizada" : "Edital salvo") : "Gravação parcial";
+    const summaryLabel = `${edital.numero || "—"} — ${edital.titulo}`;
+    const message =
+      campos.length > 0 ? `${headline}: ${summaryLabel} • Campos: ${campos.join(", ")}` : `${headline}: ${summaryLabel}`;
+    const severity = opts.parcial === true ? "warn" : "info";
+    const name =
+      opts.parcial === true ? "ProcessEditalPartialSaved" : opts.stamp_only ? "ProcessEditalStamped" : "ProcessEditalSaved";
+    await publishDomainEvent(
+      makeEventBase({
+        name,
+        severity,
+        message,
+        component: NOTIFY_COMPONENT,
+        props: {
+          ...baseEditalProps(edital),
+          campos,
+          ...(opts.parcial === true ? { parcial: true } : {}),
+          ...(opts.stamp_only ? { stamp_only: true } : {}),
+        },
+      }),
+    );
+  } catch (e) {
+    console.warn(`⚠️ EventBridge (sucesso) ignorado: ${e instanceof Error ? e.message : String(e)}`);
+  }
+}
+
+async function notifyProcessFailure(
+  edital: Pick<EditalInfo, "id" | "numero" | "titulo" | "fonte">,
+  err: unknown,
+  extra?: { gravacaoParcialFallhou?: unknown; campos?: string[] },
+): Promise<void> {
+  try {
+    const main = err instanceof Error ? err : new Error(String(err));
+    const pes = `${edital.numero || edital.id} — ${edital.titulo}`;
+    let message = `Falha ao processar edital (${pes}): ${main.message}`;
+    const props: Record<string, unknown> = {
+      ...baseEditalProps(edital),
+      ...(extra?.campos?.length ? { campos_tentados: extra.campos } : {}),
+    };
+    if (extra?.gravacaoParcialFallhou != null) {
+      const pe =
+        extra.gravacaoParcialFallhou instanceof Error
+          ? extra.gravacaoParcialFallhou.message
+          : String(extra.gravacaoParcialFallhou);
+      message += `. Gravação parcial também falhou: ${pe}`;
+      props.gravacao_parcial_erro = pe;
+      props.gravacao_parcial_disponivel = true;
+    }
+    await publishDomainEvent(
+      makeEventBase({
+        name: "ProcessEditalFailed",
+        severity: "error",
+        message,
+        component: NOTIFY_COMPONENT,
+        props,
+        error: {
+          type: main.name || "Error",
+          message: main.message,
+          stack: main.stack,
+        },
+      }),
+    );
+  } catch (e) {
+    console.warn(`⚠️ EventBridge (erro) ignorado: ${e instanceof Error ? e.message : String(e)}`);
+  }
+}
+
 const EDITAIS_PROCESS_SELECT =
   "id,numero,titulo,fonte,criado_em,informacoes_processadas_em,informacoes_extracao_evidence,valor_projeto,prazo_inscricao,localizacao,vagas,is_researcher,is_company,sobre_programa,criterios_elegibilidade,timeline_estimada";
 
@@ -910,6 +997,10 @@ async function runProcessBatch(): Promise<{ hadWork: boolean }> {
     const edital = targets[i]!;
     console.log(`\n🧾 ${edital.numero || "N/A"} — ${edital.titulo} (${edital.fonte || "N/A"})`);
     console.log(`  🆔 edital_id=${edital.id}`);
+    /** Acumula campos extraídos; usado também no catch para gravar progresso quando há timeout antes do fim do loop. */
+    let patch: Record<string, any> = {};
+    let evidenceAcc: Record<string, FieldEvidence> = {};
+    let prevEvidence: Record<string, FieldEvidence> = {};
     try {
       if (!editalNeedsAnyFieldExtraction(edital, fields)) {
         if (!(edital as any).informacoes_processadas_em) {
@@ -920,12 +1011,20 @@ async function runProcessBatch(): Promise<{ hadWork: boolean }> {
           if (stampErr) throw new Error(`Erro ao marcar informacoes_processadas_em: ${stampErr.message}`);
           console.log("  ℹ️ Campos extraíveis já preenchidos — gravando informacoes_processadas_em.");
           ok++;
+          await notifyProcessSuccess(edital, { stamp_only: true });
         } else {
           skipCompleto++;
           console.log("  ⏭️ Sem campos pendentes de extração — sem fetch de documents / modelo.");
         }
         continue;
       }
+
+      patch = {};
+      evidenceAcc = {};
+      prevEvidence =
+        edital.informacoes_extracao_evidence && typeof edital.informacoes_extracao_evidence === "object" && !Array.isArray(edital.informacoes_extracao_evidence)
+          ? { ...edital.informacoes_extracao_evidence }
+          : {};
 
       const fileIds = await fetchEditalPdfKeys(supabase, edital.id);
       const ctxAll = await fetchDocumentsContextByEdital(supabase, edital.id, fileIds);
@@ -944,13 +1043,6 @@ async function runProcessBatch(): Promise<{ hadWork: boolean }> {
         console.log("  ⏭️ pulando: sem texto em `documents` nem amostra de contexto para este edital.");
         continue;
       }
-
-      const patch: Record<string, any> = {};
-      const evidenceAcc: Record<string, FieldEvidence> = {};
-      const prevEvidence =
-        edital.informacoes_extracao_evidence && typeof edital.informacoes_extracao_evidence === "object" && !Array.isArray(edital.informacoes_extracao_evidence)
-          ? { ...edital.informacoes_extracao_evidence }
-          : {};
 
       for (const f of fields) {
         const before = (edital as any)[f];
@@ -999,10 +1091,37 @@ async function runProcessBatch(): Promise<{ hadWork: boolean }> {
 
       await updateEditalInfo(supabase, edital.id, patch);
       ok++;
+      const camposSalvos = Object.keys(patch).filter((k) => k !== "informacoes_extracao_evidence");
+      await notifyProcessSuccess(edital, { campos: camposSalvos });
       console.log("  ✅ atualizado");
     } catch (e) {
-      fail++;
-      console.error("  ❌ erro:", e instanceof Error ? e.message : String(e));
+      if (Object.keys(evidenceAcc).length > 0) {
+        patch.informacoes_extracao_evidence = { ...prevEvidence, ...evidenceAcc };
+      }
+      const fieldKeys = Object.keys(patch).filter((k) => k !== "informacoes_extracao_evidence");
+      if (fieldKeys.length > 0) {
+        try {
+          await updateEditalInfo(supabase, edital.id, patch);
+          ok++;
+          console.warn(
+            `  ⚠️ Gravação parcial (${fieldKeys.join(", ")}) — erro posterior: ${e instanceof Error ? e.message : String(e)}`,
+          );
+          await notifyProcessSuccess(edital, { campos: fieldKeys, parcial: true });
+        } catch (persistErr) {
+          fail++;
+          console.error(
+            "  ❌ erro:",
+            e instanceof Error ? e.message : String(e),
+            "| gravar parcial falhou:",
+            persistErr instanceof Error ? persistErr.message : String(persistErr),
+          );
+          await notifyProcessFailure(edital, e, { gravacaoParcialFallhou: persistErr, campos: fieldKeys });
+        }
+      } else {
+        fail++;
+        console.error("  ❌ erro:", e instanceof Error ? e.message : String(e));
+        await notifyProcessFailure(edital, e);
+      }
     }
     if (i < targets.length - 1 && delayBetweenEditaisMs > 0) {
       await new Promise((r) => setTimeout(r, delayBetweenEditaisMs));

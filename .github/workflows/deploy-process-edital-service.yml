@@ -12,7 +12,8 @@
 #   OLLAMA_BASE_URL
 #   OLLAMA_MODEL                         modelo no container (generate + embed fallback)
 #   PROCESS_EDITAL_OLLAMA_MODEL          se definida, sobrescreve OLLAMA_MODEL só neste deploy
-#   OLLAMA_TIMEOUT_MS
+#   OLLAMA_TIMEOUT_MS                    default 600000 (10 min) no deploy; evita "This operation was aborted" com modelos grandes
+#   OLLAMA_GENERATE_TIMEOUT_MS / OLLAMA_EMBED_TIMEOUT_MS  (opcional no container; requer extensão do task definition se quiseres via CF)
 #   OLLAMA_MAX_CONTEXT_CHARS
 #   PROCESS_EDITAL_LIMIT
 #   DELAY_BETWEEN_EDITAIS_MS
@@ -21,6 +22,7 @@
 #   WORKER_IDLE_MS_AFTER_WORK / WORKER_IDLE_MS_NO_WORK (opcional; defaults no CloudFormation)
 #   PROCESS_EDITAL_CLUSTER_NAME (default origemlab-process-edital)
 #   ECS_ROLLOUT_WAIT_STABLE (default 1): após CF, force-new-deployment + wait services-stable
+#   EVENT_BUS_NAME                         default default — DomainEvent para Telegram / error-reporter
 name: deploy-process-edital-service
 
 on:
@@ -103,6 +105,7 @@ jobs:
           ECS_ORCHESTRATION_MODE: ${{ vars.ECS_ORCHESTRATION_MODE }}
           WORKER_IDLE_MS_AFTER_WORK: ${{ vars.WORKER_IDLE_MS_AFTER_WORK }}
           WORKER_IDLE_MS_NO_WORK: ${{ vars.WORKER_IDLE_MS_NO_WORK }}
+          EVENT_BUS_NAME: ${{ vars.EVENT_BUS_NAME }}
         run: |
           set -euo pipefail
           : "${STACK_NAME:?Set repo variable PROCESS_EDITAL_STACK_NAME}"
@@ -122,6 +125,8 @@ jobs:
           SCHED="${SCHEDULE_EXPRESSION:-rate(30 minutes)}"
           CLUSTER="${CLUSTER_NAME:-origemlab-process-edital}"
           ORCH="${ECS_ORCHESTRATION_MODE:-continuous}"
+          EB="${EVENT_BUS_NAME:-default}"
+          echo "CloudFormation EventBusName=${EB}"
 
           OVERRIDES=(
             "ServiceImage=${IMAGE_URI}"
@@ -134,6 +139,7 @@ jobs:
             "ScheduleExpression=${SCHED}"
             "ClusterName=${CLUSTER}"
             "OrchestrationMode=${ORCH}"
+            "EventBusName=${EB}"
           )
 
           # Sempre enviar OllamaModel: se só PROCESS_EDITAL_OLLAMA_MODEL estiver no GitHub, o antigo
@@ -144,9 +150,12 @@ jobs:
           _ollama_effective="${_ollama_effective:-qwen2.5:14b}"
           OVERRIDES+=("OllamaModel=${_ollama_effective}")
           echo "CloudFormation parameter OllamaModel=${_ollama_effective} (PROCESS_EDITAL_OLLAMA_MODEL > OLLAMA_MODEL > template default)"
-          if [ -n "${OLLAMA_TIMEOUT_MS:-}" ]; then
-            OVERRIDES+=("OllamaTimeoutMs=${OLLAMA_TIMEOUT_MS}")
-          fi
+
+          _timeout_eff="$(printf '%s' "${OLLAMA_TIMEOUT_MS:-600000}" | tr -d '\r' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+          [[ "${_timeout_eff}" =~ ^[0-9]+$ ]] || _timeout_eff=600000
+          OVERRIDES+=("OllamaTimeoutMs=${_timeout_eff}")
+          echo "CloudFormation parameter OllamaTimeoutMs=${_timeout_eff}"
+
           if [ -n "${OLLAMA_MAX_CONTEXT_CHARS:-}" ]; then
             OVERRIDES+=("OllamaMaxContextChars=${OLLAMA_MAX_CONTEXT_CHARS}")
           fi

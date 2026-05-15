@@ -5,6 +5,10 @@ Parameters:
   ProjectName:
     Type: String
     Default: origemlab
+  EventBusName:
+    Type: String
+    Default: default
+    Description: "EventBridge bus para DomainEvent (notificações Telegram / error-reporter)"
   ClusterName:
     Type: String
     Default: origemlab-process-edital
@@ -37,7 +41,8 @@ Parameters:
     Default: "qwen2.5:14b"
   OllamaTimeoutMs:
     Type: Number
-    Default: 240000
+    Default: 600000
+    Description: "Timeout ms por pedido ao Ollama (generate/embed). 240s é curto para qwen14b + janelas; 600000=10min"
   OllamaMaxContextChars:
     Type: Number
     Default: 22000
@@ -125,6 +130,8 @@ Resources:
               awslogs-region: !Ref AWS::Region
               awslogs-stream-prefix: ecs
           Environment:
+            - Name: EVENT_BUS_NAME
+              Value: !Ref EventBusName
             - Name: OLLAMA_BASE_URL
               Value: !Ref OllamaBaseUrl
             - Name: OLLAMA_MODEL
