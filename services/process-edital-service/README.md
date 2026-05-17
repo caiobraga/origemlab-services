@@ -11,7 +11,8 @@ Replica o fluxo do script **`api:process-edital-info`**: percorre editais no Sup
 
 - **Obrigatório:** `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `OLLAMA_BASE_URL` (no ECS vêm do CloudFormation / secrets).
 - **Notificações (AWS):** após cada gravação bem-sucedida ou falha, o serviço emite `DomainEvent` no EventBridge (`EVENT_BUS_NAME`, default `default`) — Telegram (todos) e error-reporter (`severity: error`). Local: `DISABLE_EVENTBRIDGE=1`.
-- **Timeouts:** O cliente usa `AbortController`; se aparecer `This operation was aborted` nos logs é **timeout** do `fetch` ao Ollama. Aumenta `OLLAMA_TIMEOUT_MS` (ex. 600000–900000 ms no ECS/Github) ou define `OLLAMA_GENERATE_TIMEOUT_MS` só para `/api/generate` (modelos grandes + muitas janelas demoram vários minutos por campo).
+- **Erros comuns:** `fetch failed` no Ollama → URL/rede/retries (`OLLAMA_FETCH_RETRIES`); `statement timeout` em `documents` → limites `PROCESS_EDITAL_DOCUMENTS_*` + índices em `sql/20260516_documents_edital_lookup_indexes.sql`.
+- **Timeouts:** `OLLAMA_GENERATE_TIMEOUT_MS` (no ECS default **900000** = 15 min) aplica-se só ao `/api/generate`; `OLLAMA_EMBED_TIMEOUT_MS` ao embed. Se o log mostrar `timed out after 240000ms`, o task ainda usa `OLLAMA_TIMEOUT_MS=240000` global — redeploy com `PROCESS_EDITAL_OLLAMA_GENERATE_TIMEOUT_MS=900000` ou sobe `OLLAMA_TIMEOUT_MS`. Editais com **500k+ chars** usam janelas adaptativas (menos chamadas ao modelo).
 - **Gravação parcial:** Se o erro (ex. timeout) ocorrer **a meio** do loop de campos, o serviço tenta **`update`** com os campos **já** extraídos (`⚠️ Gravação parcial` no log), para não perder trabalho antes de um `✅ atualizado`.
 - Ordenação por volume de chunks: RPC `process_edital_editais_com_document_chunks` — aplicar `sql/20260513_process_edital_editais_com_document_chunks.sql` ou `PROCESS_EDITAL_SKIP_CHUNK_ORDER_RPC=1` para desligar temporariamente.
 

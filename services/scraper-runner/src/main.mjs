@@ -271,7 +271,7 @@ async function main() {
         await publishDomainEvent(
           makeEventBase({
             name: "ScraperRunCompleted",
-            severity: summary.failed > 0 ? "warning" : "info",
+            severity: summary.failed > 0 ? "warn" : "info",
             message: `Scraper run finished: ${summary.ok} ok, ${summary.failed} failed, ${summary.new_editais} new editais, ${summary.new_pdfs} new pdfs`,
             component: "scraper.runner",
             props: {

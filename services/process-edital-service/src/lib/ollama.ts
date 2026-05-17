@@ -1,3 +1,6 @@
+import { describeFetchError } from "./fetchError";
+import { withRetry } from "./retry";
+
 type OllamaGenerateResponse = {
   response?: string;
 };
@@ -37,9 +40,13 @@ export function getOllamaTimeoutMs(): number {
 }
 
 function getOllamaGenerateTimeoutMs(): number {
-  const g = parseInt(process.env.OLLAMA_GENERATE_TIMEOUT_MS || "", 10);
-  if (Number.isFinite(g) && g > 0) return clampTimeoutMs(g, getOllamaTimeoutMs());
-  return getOllamaTimeoutMs();
+  const raw = String(process.env.OLLAMA_GENERATE_TIMEOUT_MS || "").trim();
+  if (raw) {
+    const g = parseInt(raw, 10);
+    if (Number.isFinite(g) && g > 0) return clampTimeoutMs(g, 900_000);
+  }
+  // /api/generate é mais lento que embed; não herdar OLLAMA_TIMEOUT_MS=240000 do repo global.
+  return clampTimeoutMs(900_000, 900_000);
 }
 
 function getOllamaEmbedTimeoutMs(): number {
@@ -48,13 +55,16 @@ function getOllamaEmbedTimeoutMs(): number {
   return getOllamaTimeoutMs();
 }
 
-function abortedToTimeoutHint(err: unknown, timeoutMs: number, label: string): Error {
+function wrapOllamaFetchError(err: unknown, timeoutMs: number, label: string, baseUrl: string): Error {
   const name = err instanceof Error ? err.name : "";
   const msg = err instanceof Error ? err.message : String(err);
   if (name === "AbortError" || /aborted|AbortError|The operation was aborted/i.test(msg)) {
     return new Error(
-      `Ollama ${label} timed out after ${timeoutMs}ms (fetch aborted). For large prompts/models (e.g. qwen2.5:14b + many chunks), raise OLLAMA_TIMEOUT_MS or set OLLAMA_GENERATE_TIMEOUT_MS / OLLAMA_EMBED_TIMEOUT_MS in the ECS task env.`,
+      `Ollama ${label} timed out after ${timeoutMs}ms (fetch aborted). URL=${baseUrl}. For large prompts/models, raise OLLAMA_TIMEOUT_MS or OLLAMA_GENERATE_TIMEOUT_MS / OLLAMA_EMBED_TIMEOUT_MS.`,
     );
+  }
+  if (msg === "fetch failed" || msg.startsWith("fetch failed")) {
+    return new Error(`Ollama ${label} (${baseUrl}): ${describeFetchError(err)}`);
   }
   return err instanceof Error ? err : new Error(String(err));
 }
@@ -64,12 +74,8 @@ export function getMaxContextChars(): number {
   return Number.isFinite(n) ? Math.max(2000, n) : 22000;
 }
 
-export async function ollamaGenerate(prompt: string): Promise<string> {
-  const baseUrl = getOllamaBaseUrl();
-  const model = getOllamaModel();
-  const timeoutMs = getOllamaGenerateTimeoutMs();
+async function ollamaGenerateOnce(prompt: string, baseUrl: string, model: string, timeoutMs: number): Promise<string> {
   const temperature = parseFloat(process.env.OLLAMA_TEMPERATURE || "0");
-
   const controller = new AbortController();
   const t = setTimeout(() => controller.abort(), timeoutMs);
   try {
@@ -92,23 +98,30 @@ export async function ollamaGenerate(prompt: string): Promise<string> {
     const json = JSON.parse(text) as OllamaGenerateResponse;
     return String(json.response || "").trim();
   } catch (e) {
-    throw abortedToTimeoutHint(e, timeoutMs, "generate (/api/generate)");
+    throw wrapOllamaFetchError(e, timeoutMs, "generate (/api/generate)", baseUrl);
   } finally {
     clearTimeout(t);
   }
 }
 
-export async function ollamaEmbed(input: string): Promise<number[]> {
+export async function ollamaGenerate(prompt: string): Promise<string> {
   const baseUrl = getOllamaBaseUrl();
-  const model = getOllamaEmbedModel();
-  const timeoutMs = getOllamaEmbedTimeoutMs();
+  const model = getOllamaModel();
+  const timeoutMs = getOllamaGenerateTimeoutMs();
+  return withRetry(() => ollamaGenerateOnce(prompt, baseUrl, model, timeoutMs), {
+    label: "ollama generate",
+    attempts: parseInt(process.env.OLLAMA_FETCH_RETRIES || "3", 10) || 3,
+  });
+}
+
+async function ollamaEmbedOnce(input: string, baseUrl: string, model: string, timeoutMs: number): Promise<number[]> {
   const dimensionsRaw = (process.env.EMBED_DIMENSIONS || process.env.OLLAMA_EMBED_DIMENSIONS || "").trim();
   const dimensions = dimensionsRaw ? parseInt(dimensionsRaw, 10) : null;
 
   const controller = new AbortController();
   const t = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const body: any = { model, input };
+    const body: Record<string, unknown> = { model, input };
     if (dimensions && Number.isFinite(dimensions) && dimensions > 0) body.dimensions = dimensions;
 
     const res = await fetch(`${baseUrl}/api/embed`, {
@@ -127,9 +140,19 @@ export async function ollamaEmbed(input: string): Promise<number[]> {
     if (!Array.isArray(emb) || emb.length === 0) throw new Error("Ollama embed: empty embedding");
     return emb.map((x) => Number(x));
   } catch (e) {
-    throw abortedToTimeoutHint(e, timeoutMs, "embed (/api/embed)");
+    throw wrapOllamaFetchError(e, timeoutMs, "embed (/api/embed)", baseUrl);
   } finally {
     clearTimeout(t);
   }
+}
+
+export async function ollamaEmbed(input: string): Promise<number[]> {
+  const baseUrl = getOllamaBaseUrl();
+  const model = getOllamaEmbedModel();
+  const timeoutMs = getOllamaEmbedTimeoutMs();
+  return withRetry(() => ollamaEmbedOnce(input, baseUrl, model, timeoutMs), {
+    label: "ollama embed",
+    attempts: parseInt(process.env.OLLAMA_FETCH_RETRIES || "3", 10) || 3,
+  });
 }
 

@@ -240,43 +240,113 @@ function rowBelongsToEdital(r: any, editalId: string, fileIdSet: Set<string>): b
   return false;
 }
 
-const DOCUMENTS_SELECT_COLUMNS = "id,file_id,content,metadata,embedding,embedding_perguntas";
+/** Com vetores — queries pesadas; usar paginação e limites baixos. */
+const DOCUMENTS_SELECT_WITH_EMBED = "id,file_id,content,metadata,embedding,embedding_perguntas";
+/** Só texto — varredura por janelas (evita transferir embeddings gigantes). */
+const DOCUMENTS_SELECT_CONTENT_ONLY = "id,file_id,content,metadata";
+
+function documentsPageSize(): number {
+  const n = parseInt(process.env.PROCESS_EDITAL_DOCUMENTS_PAGE_SIZE || "200", 10);
+  return Number.isFinite(n) ? Math.max(50, Math.min(500, n)) : 200;
+}
+
+function documentsMaxRows(envKey: string, fallback: number): number {
+  const raw = (process.env as Record<string, string | undefined>)[envKey];
+  const n = raw != null && String(raw).trim() ? parseInt(String(raw), 10) : fallback;
+  return Number.isFinite(n) ? Math.max(100, Math.min(5000, n)) : fallback;
+}
+
+function isSupabaseStatementTimeout(err: { message?: string } | null): boolean {
+  const m = String(err?.message || "").toLowerCase();
+  return m.includes("statement timeout") || m.includes("canceling statement");
+}
 
 /**
  * Busca chunks do edital: `metadata.edital_id` OU `file_id` ∈ edital_pdfs.
- * PostgREST devolve `embedding` como array JSON; às vezes aninhado `[[...]]` (batch) — ver `asEmbedding`.
+ * Pagina para evitar `statement timeout` em editais com muitos chunks + embeddings.
  */
 async function fetchDocumentsForEdital(
   supabase: SupabaseClient,
   editalId: string,
   fileIds: string[],
-  limit: number,
+  opts: { select: string; maxRows: number },
 ): Promise<any[]> {
   const eid = String(editalId).trim();
   const cleanFids = [...new Set(fileIds.map((x) => String(x).trim()).filter(Boolean))];
   const fidSet = new Set(cleanFids);
+  const pageSize = documentsPageSize();
+  const maxRows = opts.maxRows;
+  const select = opts.select;
 
-  let data: any[] | null = null;
-  let error: any = null;
-
-  if (cleanFids.length > 0) {
-    const orFilter = `metadata->>edital_id.eq.${eid},file_id.in.(${cleanFids.join(",")})`;
-    const res = await supabase.from("documents").select(DOCUMENTS_SELECT_COLUMNS).or(orFilter).limit(limit);
-    data = res.data;
-    error = res.error;
-  } else {
-    const res = await supabase
+  const runPage = async (offset: number, pageLimit: number) => {
+    const to = offset + pageLimit - 1;
+    if (cleanFids.length > 0) {
+      const orFilter = `metadata->>edital_id.eq.${eid},file_id.in.(${cleanFids.join(",")})`;
+      return supabase.from("documents").select(select).or(orFilter).order("id", { ascending: true }).range(offset, to);
+    }
+    return supabase
       .from("documents")
-      .select(DOCUMENTS_SELECT_COLUMNS)
+      .select(select)
       .eq("metadata->>edital_id", eid)
-      .limit(limit);
-    data = res.data;
-    error = res.error;
+      .order("id", { ascending: true })
+      .range(offset, to);
+  };
+
+  const merged: any[] = [];
+  const seen = new Set<string>();
+  let offset = 0;
+
+  while (merged.length < maxRows) {
+    const pageLimit = Math.min(pageSize, maxRows - merged.length);
+    let res: { data: any[] | null; error: { message?: string } | null } = await runPage(offset, pageLimit);
+    if (res.error && isSupabaseStatementTimeout(res.error) && select !== DOCUMENTS_SELECT_CONTENT_ONLY) {
+      const liteLimit = Math.min(150, pageLimit);
+      console.warn(
+        `⚠️ documents: statement timeout com embeddings — página ${offset} só content (${eid.slice(0, 8)}…)`,
+      );
+      const to = offset + liteLimit - 1;
+      const liteRes =
+        cleanFids.length > 0
+          ? await supabase
+              .from("documents")
+              .select(DOCUMENTS_SELECT_CONTENT_ONLY)
+              .or(`metadata->>edital_id.eq.${eid},file_id.in.(${cleanFids.join(",")})`)
+              .order("id", { ascending: true })
+              .range(offset, to)
+          : await supabase
+              .from("documents")
+              .select(DOCUMENTS_SELECT_CONTENT_ONLY)
+              .eq("metadata->>edital_id", eid)
+              .order("id", { ascending: true })
+              .range(offset, to);
+      if (!liteRes.error) res = liteRes;
+    }
+    if (res.error) {
+      if (isSupabaseStatementTimeout(res.error) && offset === 0) {
+        throw new Error(
+          `Erro ao buscar documents: ${res.error.message} — reduza PROCESS_EDITAL_DOCUMENTS_MAX_* ou aumente statement_timeout no Supabase; índices em metadata->>edital_id e file_id ajudam.`,
+        );
+      }
+      throw new Error(`Erro ao buscar documents: ${res.error.message}`);
+    }
+
+    const batch = res.data ?? [];
+    if (!batch.length) break;
+
+    for (const r of batch) {
+      const id = r?.id != null ? String(r.id) : "";
+      if (!id || seen.has(id)) continue;
+      if (!rowBelongsToEdital(r, eid, fidSet)) continue;
+      seen.add(id);
+      merged.push(r);
+      if (merged.length >= maxRows) break;
+    }
+
+    if (batch.length < pageLimit) break;
+    offset += pageLimit;
   }
 
-  if (error) throw new Error(`Erro ao buscar documents: ${error.message}`);
-  const merged = dedupeDocumentsById(data ?? []);
-  return merged.filter((r) => rowBelongsToEdital(r, eid, fidSet));
+  return merged;
 }
 
 async function fetchDocumentsContextByEdital(
@@ -284,7 +354,10 @@ async function fetchDocumentsContextByEdital(
   editalId: string,
   fileIds: string[],
 ): Promise<{ text: string; sourceLabel: string; documentIds: string[] }> {
-  const raw = await fetchDocumentsForEdital(supabase, editalId, fileIds, 5000);
+  const raw = await fetchDocumentsForEdital(supabase, editalId, fileIds, {
+    select: DOCUMENTS_SELECT_WITH_EMBED,
+    maxRows: documentsMaxRows("PROCESS_EDITAL_DOCUMENTS_MAX_CONTEXT", 1200),
+  });
   const rows = raw.filter((r: any) => {
     if (typeof r?.content !== "string" || r.content.trim().length === 0) return false;
     return rowHasAnyEmbeddingForTopK(r);
@@ -311,7 +384,10 @@ async function fetchDocumentsRows(
   supabase: SupabaseClient,
   { editalId, fileIds }: { editalId: string; fileIds: string[] },
 ): Promise<any[]> {
-  const raw = await fetchDocumentsForEdital(supabase, editalId, fileIds, 8000);
+  const raw = await fetchDocumentsForEdital(supabase, editalId, fileIds, {
+    select: DOCUMENTS_SELECT_WITH_EMBED,
+    maxRows: documentsMaxRows("PROCESS_EDITAL_DOCUMENTS_MAX_TOPK", 1200),
+  });
   return raw.filter((r: any) => {
     if (typeof r?.content !== "string" || r.content.trim().length === 0) return false;
     return rowHasAnyEmbeddingForTopK(r);
@@ -323,7 +399,10 @@ async function fetchDocumentsRowsAllWithContent(
   supabase: SupabaseClient,
   { editalId, fileIds }: { editalId: string; fileIds: string[] },
 ): Promise<any[]> {
-  const raw = await fetchDocumentsForEdital(supabase, editalId, fileIds, 8000);
+  const raw = await fetchDocumentsForEdital(supabase, editalId, fileIds, {
+    select: DOCUMENTS_SELECT_CONTENT_ONLY,
+    maxRows: documentsMaxRows("PROCESS_EDITAL_DOCUMENTS_MAX_WINDOWS", 2500),
+  });
   return raw.filter((r: any) => typeof r?.content === "string" && r.content.trim().length > 0);
 }
 
@@ -391,38 +470,168 @@ function snippetFromContext(ctx: string): string {
   return t.slice(0, max);
 }
 
+function estimateRowsPlainChars(rows: any[]): number {
+  let n = 0;
+  for (const r of rows) {
+    const t = String(r?.content || "").trim();
+    if (t) n += t.length + (n > 0 ? 2 : 0);
+  }
+  return n;
+}
+
+/**
+ * Editais com centenas de chunks: não montar 800k+ chars em memória nem varrer só o início.
+ * Mantém ~20% início + ~20% fim + amostra do meio até PROCESS_EDITAL_WINDOW_MAX_PLAIN_BUILD.
+ */
+function subsampleRowsForWindowScan(rows: any[]): {
+  rows: any[];
+  truncated: boolean;
+  originalChars: number;
+  usedChars: number;
+} {
+  const sorted = sortRowsByChunkIndex(rows);
+  const originalChars = estimateRowsPlainChars(sorted);
+  const maxPlain = parseInt(process.env.PROCESS_EDITAL_WINDOW_MAX_PLAIN_BUILD || "320000", 10) || 320_000;
+  if (originalChars <= maxPlain) {
+    return { rows: sorted, truncated: false, originalChars, usedChars: originalChars };
+  }
+
+  const n = sorted.length;
+  const headN = Math.max(1, Math.ceil(n * 0.22));
+  const tailN = Math.max(1, Math.ceil(n * 0.22));
+  const head = sorted.slice(0, headN);
+  const tail = sorted.slice(n - tailN);
+  const middle = sorted.slice(headN, n - tailN);
+
+  const picked: any[] = [...head];
+  let usedChars = estimateRowsPlainChars(picked);
+  const tailChars = estimateRowsPlainChars(tail);
+  const budgetMid = Math.max(0, maxPlain - usedChars - tailChars);
+
+  if (budgetMid > 0 && middle.length > 0) {
+    const avg = Math.max(80, Math.floor(estimateRowsPlainChars(middle) / middle.length));
+    const step = Math.max(1, Math.ceil(middle.length / Math.max(1, Math.ceil(budgetMid / avg))));
+    for (let i = 0; i < middle.length && usedChars < maxPlain - tailChars; i += step) {
+      picked.push(middle[i]!);
+      usedChars = estimateRowsPlainChars(picked);
+    }
+  }
+
+  const seen = new Set<string>();
+  const out: any[] = [];
+  for (const r of [...picked, ...tail]) {
+    const id = r?.id != null ? String(r.id) : "";
+    if (id && seen.has(id)) continue;
+    if (id) seen.add(id);
+    out.push(r);
+  }
+
+  const usedRows = sortRowsByChunkIndex(out);
+  return {
+    rows: usedRows,
+    truncated: true,
+    originalChars,
+    usedChars: estimateRowsPlainChars(usedRows),
+  };
+}
+
+/** Posições de janela espalhadas no texto (início, meio, fim) em vez de só as primeiras páginas. */
+function computeSpreadWindowStarts(plainLen: number, windowSize: number, maxW: number): number[] {
+  if (plainLen <= windowSize) return [0];
+  const maxStart = plainLen - windowSize;
+  if (maxW <= 1) return [0];
+  const starts: number[] = [];
+  for (let i = 0; i < maxW; i++) {
+    const start = i === maxW - 1 ? maxStart : Math.round((maxStart * i) / (maxW - 1));
+    if (!starts.length || start > starts[starts.length - 1]!) starts.push(start);
+  }
+  return starts.length ? starts : [0];
+}
+
+/** Limita janelas em PDFs enormes (ex. 500k+ chars) para não estourar timeout do Ollama por campo. */
+function resolveWindowScanParams(plainLen: number): {
+  windowSize: number;
+  overlap: number;
+  maxWindows: number;
+  useSpreadWindows: boolean;
+} {
+  let windowSize = Math.max(2000, parseInt(process.env.PROCESS_EDITAL_WINDOW_CHARS || "12000", 10) || 12000);
+  let overlap = Math.max(0, parseInt(process.env.PROCESS_EDITAL_WINDOW_OVERLAP || "2000", 10) || 2000);
+  let maxWindows = Math.max(1, parseInt(process.env.PROCESS_EDITAL_WINDOW_MAX_WINDOWS || "80", 10) || 80);
+  let useSpreadWindows = false;
+
+  const largePlain = parseInt(process.env.PROCESS_EDITAL_WINDOW_LARGE_PLAIN_CHARS || "200000", 10) || 200_000;
+  const hugePlain = parseInt(process.env.PROCESS_EDITAL_WINDOW_HUGE_PLAIN_CHARS || "400000", 10) || 400_000;
+
+  if (plainLen >= hugePlain) {
+    useSpreadWindows = true;
+    maxWindows = Math.min(
+      maxWindows,
+      parseInt(process.env.PROCESS_EDITAL_WINDOW_MAX_WINDOWS_HUGE || "12", 10) || 12,
+    );
+    windowSize = Math.min(
+      windowSize,
+      parseInt(process.env.PROCESS_EDITAL_WINDOW_CHARS_HUGE || "10000", 10) || 10_000,
+    );
+    overlap = 0;
+  } else if (plainLen >= largePlain) {
+    maxWindows = Math.min(
+      maxWindows,
+      parseInt(process.env.PROCESS_EDITAL_WINDOW_MAX_WINDOWS_LARGE || "28", 10) || 28,
+    );
+    windowSize = Math.min(windowSize, parseInt(process.env.PROCESS_EDITAL_WINDOW_CHARS_LARGE || "12000", 10) || 12_000);
+    useSpreadWindows = true;
+    maxWindows = Math.min(
+      maxWindows,
+      parseInt(process.env.PROCESS_EDITAL_WINDOW_MAX_WINDOWS_LARGE || "20", 10) || 20,
+    );
+  }
+
+  return { windowSize, overlap, maxWindows, useSpreadWindows };
+}
+
+function capContextForModel(context: string): string {
+  const maxCtx = getMaxContextChars();
+  const t = String(context || "");
+  if (t.length <= maxCtx) return t;
+  return t.slice(0, maxCtx);
+}
+
 async function tryWindowScan(
   field: FieldKey,
   edital: EditalInfo,
   rowsAll: any[],
 ): Promise<{ value: any; rawJson: string; modelOutput: string; evidence: FieldEvidence | null }> {
-  const { plain, spans } = buildPlainWithSpans(rowsAll);
+  const sampled = subsampleRowsForWindowScan(rowsAll);
+  if (sampled.truncated) {
+    console.log(
+      `  🪟 texto para janelas: ${sampled.originalChars} → ${sampled.usedChars} chars (${sampled.rows.length}/${rowsAll.length} chunks; cap PROCESS_EDITAL_WINDOW_MAX_PLAIN_BUILD)`,
+    );
+  }
+
+  const { plain, spans } = buildPlainWithSpans(sampled.rows);
   if (!plain.trim()) {
     return { value: null, rawJson: "", modelOutput: "", evidence: null };
   }
 
-  const windowSize = Math.max(2000, parseInt(process.env.PROCESS_EDITAL_WINDOW_CHARS || "12000", 10) || 12000);
-  const overlap = Math.max(0, parseInt(process.env.PROCESS_EDITAL_WINDOW_OVERLAP || "2000", 10) || 2000);
-  const maxW = Math.max(1, parseInt(process.env.PROCESS_EDITAL_WINDOW_MAX_WINDOWS || "80", 10) || 80);
+  const { windowSize, overlap, maxWindows: maxW, useSpreadWindows } = resolveWindowScanParams(plain.length);
   const maxCtx = getMaxContextChars();
+  const effectiveWin = Math.min(windowSize, maxCtx);
 
-  let start = 0;
-  let wi = 0;
+  if (plain.length >= (parseInt(process.env.PROCESS_EDITAL_WINDOW_LARGE_PLAIN_CHARS || "200000", 10) || 200_000)) {
+    console.log(
+      `  🪟 janelas: plain=${plain.length} win=${effectiveWin} max=${maxW} modo=${useSpreadWindows ? "espalhado" : "deslizante"}`,
+    );
+  }
+
   let lastOut: { value: any; rawJson: string; modelOutput: string } = { value: null, rawJson: "", modelOutput: "" };
 
-  while (start < plain.length && wi < maxW) {
-    const end = Math.min(plain.length, start + Math.min(windowSize, maxCtx));
-    const slice = plain.slice(start, end);
-    wi += 1;
+  const runWindow = async (start: number, wi: number) => {
+    const end = Math.min(plain.length, start + effectiveWin);
+    const slice = capContextForModel(plain.slice(start, end));
+    if (!slice.trim()) return false;
 
-    // Janela só com espaços: avança. (Antes: `slice.trim().length < 40` fazia **break** e abortava TODA a varredura.)
-    if (!slice.trim()) {
-      if (end >= plain.length) break;
-      const nextStart = end - overlap;
-      start = nextStart <= start ? start + 1 : nextStart;
-      continue;
-    }
-
+    console.log(`  🪟 janela ${wi + 1}/${maxW} pos=${start}-${end} ctx_chars=${slice.length}`);
     const ex = await extractFieldValue(field, edital, slice);
     lastOut = ex;
     if (extractionValueIsUseful(field, ex.value)) {
@@ -434,15 +643,32 @@ async function tryWindowScan(
         evidence: {
           source: "window",
           snippet: snippetFromContext(slice),
-          window_index: wi - 1,
+          window_index: wi,
           ...docIdsEvidenceFields(docIds),
         },
-      };
+      } as const;
     }
+    return false;
+  };
 
-    if (end >= plain.length) break;
-    const nextStart = end - overlap;
-    start = nextStart <= start ? start + 1 : nextStart;
+  if (useSpreadWindows) {
+    const starts = computeSpreadWindowStarts(plain.length, effectiveWin, maxW);
+    for (let wi = 0; wi < starts.length; wi++) {
+      const hit = await runWindow(starts[wi]!, wi);
+      if (hit && typeof hit === "object" && "value" in hit) return hit;
+    }
+  } else {
+    let start = 0;
+    let wi = 0;
+    while (start < plain.length && wi < maxW) {
+      const hit = await runWindow(start, wi);
+      if (hit && typeof hit === "object" && "value" in hit) return hit;
+      const end = Math.min(plain.length, start + effectiveWin);
+      if (end >= plain.length) break;
+      const nextStart = end - overlap;
+      start = nextStart <= start ? start + 1 : nextStart;
+      wi += 1;
+    }
   }
 
   return { value: null, rawJson: lastOut.rawJson, modelOutput: lastOut.modelOutput, evidence: null };
@@ -468,6 +694,7 @@ async function extractFieldWithTopKThenWindows(
     const top = buildTopKContext(rowsEmb, qEmb, { label: field, kOverride: fieldTopK(field) });
     if (hasNonEmptyContextText(top.text)) {
       topkContextAttempted = true;
+      console.log(`  🔝 top-k campo=${field} ctx_chars=${top.text.length} (${top.sourceLabel})`);
       const ex = await extractFieldValue(field, edital, top.text);
       lastEx = ex;
       if (extractionValueIsUseful(field, ex.value)) {
@@ -504,9 +731,9 @@ async function extractFieldWithTopKThenWindows(
   }
 
   // 3) Janelas deslizantes sobre o texto plano de todos os chunks (após top-k inútil/null ou bulk inútil)
-  const plainChars = buildPlainFullText(rowsAll).length;
+  const plainCharsTotal = estimateRowsPlainChars(rowsAll);
   console.log(
-    `  🪟 campo=${field}: janelas | plain_chars=${plainChars} chunks=${rowsAll.length} topk_ctx_tentado=${topkContextAttempted}`,
+    `  🪟 campo=${field}: janelas | plain_chars_total=${plainCharsTotal} chunks=${rowsAll.length} topk_ctx_tentado=${topkContextAttempted}`,
   );
   const win = await tryWindowScan(field, edital, rowsAll);
   if (extractionValueIsUseful(field, win.value)) return win;
@@ -747,11 +974,12 @@ async function extractFieldValue(
   edital: EditalInfo,
   context: string,
 ): Promise<{ value: any; rawJson: string; modelOutput: string }> {
+  const ctx = capContextForModel(context);
   // retry once if JSON is invalid / missing key
   let attempt = 0;
   let last: { value: any; rawJson: string; modelOutput: string } | null = null;
   while (attempt < 2) {
-    const out = await generateStrictJson(field, edital, context);
+    const out = await generateStrictJson(field, edital, ctx);
     last = out;
     const parsed = safeJsonParse(out.rawJson);
     const hasKey = parsed && typeof parsed === "object" && (parsed as any)[field] !== undefined;
@@ -771,7 +999,7 @@ async function extractFieldValue(
         String(out.modelOutput || "").slice(0, 2000),
         "",
         "CONTEÚDO (mesmo conteúdo):",
-        context || "(vazio)",
+        ctx || "(vazio)",
       ].join("\n");
       const llmOut2 = await ollamaGenerate(fixPrompt);
       const raw2 = extractJsonBlock(llmOut2);

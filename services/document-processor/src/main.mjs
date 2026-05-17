@@ -697,12 +697,17 @@ async function runDocumentProcessor(cliArgs = process.argv.slice(2)) {
 
   const durationMs = Date.now() - startedAt;
   console.log(`\n[document-processor] resumo: chunks gravados=${totalChunks}, embeddings ok=${totalOk}, falhas pdf=${totalFail}, ${durationMs}ms`);
+  if (totalChunks > 0 && totalOk === 0) {
+    console.warn(
+      "[document-processor] ⚠️ chunks gravados mas 0 embeddings ok — verifique OLLAMA_BASE_URL, OLLAMA_EMBED_MODEL e logs de 'embed (pre-insert)'; process-edital top-k fica degradado.",
+    );
+  }
 
   try {
     await publishDomainEvent(
       makeEventBase({
         name: "DocumentProcessingCompleted",
-        severity: totalFail > 0 ? "warning" : "info",
+        severity: totalFail > 0 || (totalChunks > 0 && totalOk === 0) ? "warn" : "info",
         message: `Document processing finished: ${totalChunks} chunks, ${totalOk} embeddings, ${totalFail} failures`,
         component: "document.processor",
         props: { duration_ms: durationMs, total_chunks: totalChunks, embeddings_ok: totalOk, pdf_failures: totalFail },

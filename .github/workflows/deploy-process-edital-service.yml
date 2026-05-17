@@ -12,8 +12,9 @@
 #   OLLAMA_BASE_URL
 #   OLLAMA_MODEL                         modelo no container (generate + embed fallback)
 #   PROCESS_EDITAL_OLLAMA_MODEL          se definida, sobrescreve OLLAMA_MODEL só neste deploy
-#   OLLAMA_TIMEOUT_MS                    default 600000 (10 min) no deploy; evita "This operation was aborted" com modelos grandes
-#   OLLAMA_GENERATE_TIMEOUT_MS / OLLAMA_EMBED_TIMEOUT_MS  (opcional no container; requer extensão do task definition se quiseres via CF)
+#   OLLAMA_TIMEOUT_MS                    default 600000 (embed + fallback)
+#   PROCESS_EDITAL_OLLAMA_GENERATE_TIMEOUT_MS / OLLAMA_GENERATE_TIMEOUT_MS  default 900000 no deploy (15 min /api/generate)
+#   PROCESS_EDITAL_OLLAMA_EMBED_TIMEOUT_MS / OLLAMA_EMBED_TIMEOUT_MS         default 180000 no deploy
 #   OLLAMA_MAX_CONTEXT_CHARS
 #   PROCESS_EDITAL_LIMIT
 #   DELAY_BETWEEN_EDITAIS_MS
@@ -99,6 +100,10 @@ jobs:
           OLLAMA_MODEL: ${{ vars.OLLAMA_MODEL }}
           PROCESS_EDITAL_OLLAMA_MODEL: ${{ vars.PROCESS_EDITAL_OLLAMA_MODEL }}
           OLLAMA_TIMEOUT_MS: ${{ vars.OLLAMA_TIMEOUT_MS }}
+          OLLAMA_GENERATE_TIMEOUT_MS: ${{ vars.OLLAMA_GENERATE_TIMEOUT_MS }}
+          PROCESS_EDITAL_OLLAMA_GENERATE_TIMEOUT_MS: ${{ vars.PROCESS_EDITAL_OLLAMA_GENERATE_TIMEOUT_MS }}
+          OLLAMA_EMBED_TIMEOUT_MS: ${{ vars.OLLAMA_EMBED_TIMEOUT_MS }}
+          PROCESS_EDITAL_OLLAMA_EMBED_TIMEOUT_MS: ${{ vars.PROCESS_EDITAL_OLLAMA_EMBED_TIMEOUT_MS }}
           OLLAMA_MAX_CONTEXT_CHARS: ${{ vars.OLLAMA_MAX_CONTEXT_CHARS }}
           PROCESS_EDITAL_LIMIT: ${{ vars.PROCESS_EDITAL_LIMIT }}
           DELAY_BETWEEN_EDITAIS_MS: ${{ vars.DELAY_BETWEEN_EDITAIS_MS }}
@@ -155,6 +160,22 @@ jobs:
           [[ "${_timeout_eff}" =~ ^[0-9]+$ ]] || _timeout_eff=600000
           OVERRIDES+=("OllamaTimeoutMs=${_timeout_eff}")
           echo "CloudFormation parameter OllamaTimeoutMs=${_timeout_eff}"
+
+          _gen_proc="$(printf '%s' "${PROCESS_EDITAL_OLLAMA_GENERATE_TIMEOUT_MS:-}" | tr -d '\r' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+          _gen_shared="$(printf '%s' "${OLLAMA_GENERATE_TIMEOUT_MS:-}" | tr -d '\r' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+          _gen_eff="${_gen_proc:-${_gen_shared}}"
+          _gen_eff="${_gen_eff:-900000}"
+          [[ "${_gen_eff}" =~ ^[0-9]+$ ]] || _gen_eff=900000
+          OVERRIDES+=("OllamaGenerateTimeoutMs=${_gen_eff}")
+          echo "CloudFormation parameter OllamaGenerateTimeoutMs=${_gen_eff} (PROCESS_EDITAL_OLLAMA_GENERATE_TIMEOUT_MS > OLLAMA_GENERATE_TIMEOUT_MS > 900000)"
+
+          _emb_proc="$(printf '%s' "${PROCESS_EDITAL_OLLAMA_EMBED_TIMEOUT_MS:-}" | tr -d '\r' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+          _emb_shared="$(printf '%s' "${OLLAMA_EMBED_TIMEOUT_MS:-}" | tr -d '\r' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+          _emb_eff="${_emb_proc:-${_emb_shared}}"
+          _emb_eff="${_emb_eff:-180000}"
+          [[ "${_emb_eff}" =~ ^[0-9]+$ ]] || _emb_eff=180000
+          OVERRIDES+=("OllamaEmbedTimeoutMs=${_emb_eff}")
+          echo "CloudFormation parameter OllamaEmbedTimeoutMs=${_emb_eff}"
 
           if [ -n "${OLLAMA_MAX_CONTEXT_CHARS:-}" ]; then
             OVERRIDES+=("OllamaMaxContextChars=${OLLAMA_MAX_CONTEXT_CHARS}")

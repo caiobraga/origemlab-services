@@ -1,5 +1,12 @@
+import { describeFetchError, isTransientFetchError } from "./fetchError.mjs";
+
 function ollamaBaseUrl() {
   return (process.env.OLLAMA_BASE_URL || "http://localhost:11434").replace(/\/$/, "");
+}
+
+function embedFetchRetries() {
+  const n = parseInt(process.env.OLLAMA_FETCH_RETRIES || "3", 10);
+  return Number.isFinite(n) ? Math.max(1, Math.min(6, n)) : 3;
 }
 
 function embedDimensions() {
@@ -20,20 +27,42 @@ function embedMaxCharsPerInput() {
 
 async function embedWithOllama(texts) {
   if (texts.length === 0) return [];
-  const url = `${ollamaBaseUrl()}/api/embed`;
+  const base = ollamaBaseUrl();
+  const url = `${base}/api/embed`;
   const input = texts.length === 1 ? texts[0] : texts;
   const model = process.env.OLLAMA_EMBED_MODEL || "mxbai-embed-large:latest";
   const body = { model, input };
   const dim = embedDimensions();
   if (dim != null && dim > 0) body.dimensions = dim;
-  const res = await fetch(url, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
-  if (!res.ok) throw new Error(`Ollama embed: ${res.status} ${await res.text()}`);
-  const data = await res.json();
-  return data.embeddings || [];
+
+  const attempts = embedFetchRetries();
+  let last;
+  for (let i = 0; i < attempts; i++) {
+    try {
+      const res = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) throw new Error(`Ollama embed: ${res.status} ${(await res.text()).slice(0, 500)}`);
+      const data = await res.json();
+      return data.embeddings || [];
+    } catch (e) {
+      last = e;
+      const msg = e instanceof Error ? e.message : String(e);
+      const wrapped =
+        msg === "fetch failed" || msg.startsWith("fetch failed")
+          ? new Error(`Ollama embed (${base}): ${describeFetchError(e)}`)
+          : e instanceof Error
+            ? e
+            : new Error(String(e));
+      if (i >= attempts - 1 || !isTransientFetchError(wrapped)) throw wrapped;
+      const delay = 1500 * (i + 1);
+      console.warn(`⚠️ ollama embed: retry ${i + 1}/${attempts} em ${delay}ms — ${wrapped.message}`);
+      await new Promise((r) => setTimeout(r, delay));
+    }
+  }
+  throw last instanceof Error ? last : new Error(String(last));
 }
 
 function buildEmbedBatches(texts) {
