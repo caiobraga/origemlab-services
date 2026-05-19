@@ -18,6 +18,9 @@ Parameters:
   SubnetIds:
     Type: List<AWS::EC2::Subnet::Id>
     Description: "Subnets publicas (NLB + tasks com IP publico para pull de imagem/modelos)"
+  SecurityGroupIds:
+    Type: List<AWS::EC2::SecurityGroup::Id>
+    Description: "Mesmos SECURITY_GROUP_IDS das outras pipelines (regras :11434 adicionadas no 1o SG)"
   VpcCidrBlock:
     Type: String
     Description: "CIDR da VPC para acesso interno (ECS pipelines)"
@@ -53,32 +56,26 @@ Conditions:
   HasPublicAccessCidr: !Not [!Equals [!Ref PublicAccessCidr, ""]]
 
 Resources:
-  OllamaSecurityGroup:
-    Type: AWS::EC2::SecurityGroup
+  OllamaVpcIngress:
+    Type: AWS::EC2::SecurityGroupIngress
     Properties:
-      GroupDescription: "origemlab ollama ECS NLB target"
-      VpcId: !Ref VpcId
-      SecurityGroupIngress:
-        - IpProtocol: tcp
-          FromPort: 11434
-          ToPort: 11434
-          CidrIp: !Ref VpcCidrBlock
-          Description: Ollama from VPC
-      SecurityGroupEgress:
-        - IpProtocol: "-1"
-          CidrIp: 0.0.0.0/0
-          Description: Egress all
+      GroupId: !Select [0, !Ref SecurityGroupIds]
+      IpProtocol: tcp
+      FromPort: 11434
+      ToPort: 11434
+      CidrIp: !Ref VpcCidrBlock
+      Description: origemlab ollama from VPC
 
   OllamaPublicIngress:
     Type: AWS::EC2::SecurityGroupIngress
     Condition: HasPublicAccessCidr
     Properties:
-      GroupId: !Ref OllamaSecurityGroup
+      GroupId: !Select [0, !Ref SecurityGroupIds]
       IpProtocol: tcp
       FromPort: 11434
       ToPort: 11434
       CidrIp: !Ref PublicAccessCidr
-      Description: Ollama from Internet
+      Description: origemlab ollama from Internet
 
   OllamaCluster:
     Type: AWS::ECS::Cluster
@@ -195,8 +192,7 @@ Resources:
         AwsvpcConfiguration:
           AssignPublicIp: ENABLED
           Subnets: !Ref SubnetIds
-          SecurityGroups:
-            - !Ref OllamaSecurityGroup
+          SecurityGroups: !Ref SecurityGroupIds
       LoadBalancers:
         - ContainerName: ollama
           ContainerPort: 11434
@@ -224,4 +220,4 @@ Outputs:
     Description: "Alias para ecs-force-rollout-after-cfn.sh"
     Value: !GetAtt OllamaService.Name
   SecurityGroupId:
-    Value: !Ref OllamaSecurityGroup
+    Value: !Select [0, !Ref SecurityGroupIds]

@@ -59,6 +59,7 @@ jobs:
           STACK_NAME: ${{ vars.OLLAMA_SERVICE_STACK_NAME }}
           VPC_ID: ${{ vars.VPC_ID }}
           SUBNET_IDS: ${{ vars.SUBNET_IDS }}
+          SECURITY_GROUP_IDS: ${{ vars.SECURITY_GROUP_IDS }}
           OLLAMA_CHAT_MODEL: ${{ vars.OLLAMA_CHAT_MODEL }}
           OLLAMA_EMBED_MODEL: ${{ vars.OLLAMA_EMBED_MODEL }}
           PUBLIC_ACCESS_CIDR: ${{ vars.OLLAMA_SERVER_PUBLIC_ACCESS_CIDR }}
@@ -72,10 +73,12 @@ jobs:
           STACK_NAME="$(bash .github/scripts/normalize-cloudformation-stack-name.sh "${STACK_NAME}")"
           : "${VPC_ID:?Set repo variable VPC_ID}"
           : "${SUBNET_IDS:?Set repo variable SUBNET_IDS}"
+          : "${SECURITY_GROUP_IDS:?Set repo variable SECURITY_GROUP_IDS}"
           : "${IMAGE_URI:?IMAGE_URI missing}"
 
           escape_cf_list() { printf '%s' "$1" | sed 's/,/\\,/g'; }
           SUBNET_IDS_CF=$(escape_cf_list "${SUBNET_IDS}")
+          SG_IDS_CF=$(escape_cf_list "${SECURITY_GROUP_IDS}")
 
           VPC_CIDR="$(aws ec2 describe-vpcs --vpc-ids "${VPC_ID}" --query 'Vpcs[0].CidrBlock' --output text)"
           CHAT="${OLLAMA_CHAT_MODEL:-qwen2.5:7b}"
@@ -92,6 +95,7 @@ jobs:
             "ServiceImage=${IMAGE_URI}"
             "VpcId=${VPC_ID}"
             "SubnetIds=${SUBNET_IDS_CF}"
+            "SecurityGroupIds=${SG_IDS_CF}"
             "VpcCidrBlock=${VPC_CIDR}"
             "OllamaChatModel=${CHAT}"
             "OllamaEmbedModel=${EMBED}"

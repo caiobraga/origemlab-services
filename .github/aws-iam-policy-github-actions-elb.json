@@ -26,6 +26,17 @@
         "elasticloadbalancing:RemoveTags"
       ],
       "Resource": "*"
+    },
+    {
+      "Sid": "OrigemlabEc2SecurityGroupIngress",
+      "Effect": "Allow",
+      "Action": [
+        "ec2:AuthorizeSecurityGroupIngress",
+        "ec2:RevokeSecurityGroupIngress",
+        "ec2:DescribeSecurityGroups",
+        "ec2:DescribeSecurityGroupRules"
+      ],
+      "Resource": "*"
     }
   ]
 }

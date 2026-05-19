@@ -12,9 +12,11 @@ Endpoint **estável** (DNS do Network Load Balancer), sempre ligado, como um “
 
 ## IAM (obrigatório no papel `GithubActions`)
 
-O deploy cria **Network Load Balancer** + target group. Sem permissões ELB o CloudFormation falha com `elasticloadbalancing:CreateLoadBalancer` **AccessDenied**.
+O deploy cria **Network Load Balancer** + target group e reutiliza **`SECURITY_GROUP_IDS`** (não cria SG novo). Sem permissões ELB/EC2 o CloudFormation falha com **AccessDenied**.
 
-Anexe ao role usado em `AWS_ROLE_ARN` o JSON em [`.github/aws-iam-policy-github-actions-elb.json`](../../.github/aws-iam-policy-github-actions-elb.json).
+Anexe ao role `AWS_ROLE_ARN` o JSON em [`.github/aws-iam-policy-github-actions-elb.json`](../../.github/aws-iam-policy-github-actions-elb.json) (ELB + `ec2:AuthorizeSecurityGroupIngress` para abrir a porta 11434).
+
+Se não puder alterar IAM: abra manualmente no console **EC2 → Security Groups** (primeiro ID de `SECURITY_GROUP_IDS`) → inbound **TCP 11434** da VPC e, se precisar dev local, do seu IP ou `0.0.0.0/0`.
 
 ## Variáveis GitHub
 
@@ -22,6 +24,7 @@ Anexe ao role usado em `AWS_ROLE_ARN` o JSON em [`.github/aws-iam-policy-github-
 |----------|-------------|---------|
 | `VPC_ID` | sim | — |
 | `SUBNET_IDS` | sim | subnets **públicas** (tasks com IP público para pull de imagem/modelos) |
+| `SECURITY_GROUP_IDS` | sim | mesmo das pipelines; o stack abre **11434** no primeiro SG da lista |
 | `OLLAMA_BASE_URL` | sim (outros serviços) | output `OllamaBaseUrl` após deploy |
 | `OLLAMA_CHAT_MODEL` | não | `qwen2.5:7b` |
 | `OLLAMA_EMBED_MODEL` | não | `mxbai-embed-large:latest` |
