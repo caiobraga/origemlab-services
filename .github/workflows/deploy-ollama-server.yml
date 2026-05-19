@@ -85,23 +85,13 @@ jobs:
 
           bash .github/scripts/cfn-delete-failed-stack.sh "${STACK_NAME}"
 
-          PARAMS_FILE="$(mktemp)"
-          python3 <<'PY' "${PARAMS_FILE}" "${OVERRIDES[@]}"
-          import json, sys
-          path = sys.argv[1]
-          obj = {}
-          for item in sys.argv[2:]:
-              key, _, value = item.partition("=")
-              obj[key] = value
-          with open(path, "w", encoding="utf-8") as f:
-              json.dump(obj, f)
-          PY
+          echo "CloudFormation parameters: ${OVERRIDES[*]}"
 
           if ! aws cloudformation deploy \
             --stack-name "${STACK_NAME}" \
             --template-file infrastructure/ec2-ollama-server.yml \
             --capabilities CAPABILITY_IAM \
-            --parameter-overrides "file://${PARAMS_FILE}" \
+            --parameter-overrides "${OVERRIDES[@]}" \
             --no-fail-on-empty-changeset; then
             echo "=== CloudFormation failure: ${STACK_NAME} ==="
             aws cloudformation describe-stack-events \
@@ -112,7 +102,6 @@ jobs:
             echo "::error::Stack ${STACK_NAME} failed — see table above (common: subnet not in VPC, EIP limit, insufficient capacity for InstanceType)."
             exit 1
           fi
-          rm -f "${PARAMS_FILE}"
 
           OLLAMA_URL="$(aws cloudformation describe-stacks --stack-name "${STACK_NAME}" \
             --query "Stacks[0].Outputs[?OutputKey=='OllamaBaseUrl'].OutputValue" --output text)"
