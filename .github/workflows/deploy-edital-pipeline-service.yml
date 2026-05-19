@@ -13,14 +13,7 @@
 name: deploy-edital-pipeline-service
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - "services/edital-pipeline-service/**"
-      - "services/process-edital-service/**"
-      - "services/validate-edital-service/**"
-      - "infrastructure/ecs-edital-pipeline-service.yml"
-      - ".github/workflows/deploy-edital-pipeline-service.yml"
+  # Push desativado: use deploy-all-ecs-services (ambas pipelines) ou workflow_dispatch aqui.
   workflow_dispatch: {}
   workflow_call: {}
 
@@ -47,14 +40,8 @@ jobs:
           aws-region: ${{ env.AWS_REGION }}
           role-to-assume: ${{ vars.AWS_ROLE_ARN }}
 
-      - name: Verify ECR repository
-        run: |
-          set -euo pipefail
-          REPO="origemlab-edital-pipeline-service"
-          if ! aws ecr describe-repositories --repository-names "${REPO}" --region "${AWS_REGION}" >/dev/null; then
-            echo "ECR repository ${REPO} not found. Run infrastructure/ecr-repositories.yml or create ${REPO} in ECR."
-            exit 1
-          fi
+      - name: Ensure ECR repository exists
+        run: bash .github/scripts/ensure-ecr-repository.sh origemlab-edital-pipeline-service
 
       - name: Login to Amazon ECR
         id: login-ecr

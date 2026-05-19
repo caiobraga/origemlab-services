@@ -1,3 +1,5 @@
+# DEPRECATED for push deploys — use edital-pipeline-service (deploy-all-ecs-services).
+# Manual only: workflow_dispatch (stack ECS legado).
 # ECS deploy: process-edital-service (extract fields via Ollama → update editais).
 #
 # Required repo variables:
@@ -27,12 +29,6 @@
 name: deploy-process-edital-service
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - "services/process-edital-service/**"
-      - "infrastructure/ecs-process-edital-service.yml"
-      - ".github/workflows/deploy-process-edital-service.yml"
   workflow_dispatch: {}
   workflow_call: {}
 

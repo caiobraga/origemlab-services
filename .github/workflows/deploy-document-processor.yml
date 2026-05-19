@@ -1,3 +1,5 @@
+# DEPRECATED for push deploys — use ingestion-pipeline-service (deploy-all-ecs-services).
+# Manual only: workflow_dispatch (stack ECS legado).
 # Document processing runs on ECS Fargate (Docker image from ECR), not Lambda.
 # SAM/Lambda deploy is separate: see deploy.yml for EventBridge → Lambda handlers only.
 #
@@ -21,12 +23,6 @@
 name: deploy-document-processor
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - "services/document-processor/**"
-      - "infrastructure/ecs-document-processor.yml"
-      - ".github/workflows/deploy-document-processor.yml"
   workflow_dispatch: {}
   workflow_call: {}
 

@@ -2,14 +2,7 @@
 name: deploy-ingestion-pipeline-service
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - "services/ingestion-pipeline-service/**"
-      - "services/scraper-runner/**"
-      - "services/document-processor/**"
-      - "infrastructure/ecs-ingestion-pipeline-service.yml"
-      - ".github/workflows/deploy-ingestion-pipeline-service.yml"
+  # Push desativado: use deploy-all-ecs-services (ambas pipelines) ou workflow_dispatch aqui.
   workflow_dispatch: {}
   workflow_call: {}
 
@@ -36,14 +29,8 @@ jobs:
           aws-region: ${{ env.AWS_REGION }}
           role-to-assume: ${{ vars.AWS_ROLE_ARN }}
 
-      - name: Verify ECR repository
-        run: |
-          set -euo pipefail
-          REPO="origemlab-ingestion-pipeline-service"
-          if ! aws ecr describe-repositories --repository-names "${REPO}" --region "${AWS_REGION}" >/dev/null; then
-            echo "ECR repository ${REPO} not found. Run infrastructure/ecr-repositories.yml or create ${REPO}."
-            exit 1
-          fi
+      - name: Ensure ECR repository exists
+        run: bash .github/scripts/ensure-ecr-repository.sh origemlab-ingestion-pipeline-service
 
       - name: Login to Amazon ECR
         id: login-ecr

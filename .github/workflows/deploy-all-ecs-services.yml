@@ -1,5 +1,6 @@
-# Runs all ECS service deploy workflows in parallel (build → ECR → CloudFormation).
-# SAM/Lambda deploy remains in deploy.yml.
+# Único entrypoint ECS recomendado: ingestion-pipeline + edital-pipeline em paralelo.
+# Stacks legados (scraper/document-processor/process/validate separados) não disparam em push.
+# SAM/Lambda: deploy.yml
 name: deploy-all-ecs-services
 
 on:
@@ -7,10 +8,22 @@ on:
   push:
     branches: [main]
     paths:
+      - "services/ingestion-pipeline-service/**"
+      - "services/edital-pipeline-service/**"
+      - "services/scraper-runner/**"
+      - "services/document-processor/**"
+      - "services/process-edital-service/**"
+      - "services/validate-edital-service/**"
+      - "infrastructure/ecs-ingestion-pipeline-service.yml"
+      - "infrastructure/ecs-edital-pipeline-service.yml"
       - ".github/workflows/deploy-all-ecs-services.yml"
+      - ".github/workflows/deploy-ingestion-pipeline-service.yml"
+      - ".github/workflows/deploy-edital-pipeline-service.yml"
+      - ".github/scripts/ensure-ecr-repository.sh"
 
 permissions:
   contents: read
+  id-token: write
 
 jobs:
   ingestion-pipeline-service:

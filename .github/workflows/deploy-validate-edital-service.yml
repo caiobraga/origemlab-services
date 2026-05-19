@@ -27,12 +27,6 @@
 name: deploy-validate-edital-service
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - "services/validate-edital-service/**"
-      - "infrastructure/ecs-validate-edital-service.yml"
-      - ".github/workflows/deploy-validate-edital-service.yml"
   workflow_dispatch: {}
   workflow_call: {}
 

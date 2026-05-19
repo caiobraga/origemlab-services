@@ -4,11 +4,28 @@ Serviços (Lambda) consumindo eventos do EventBridge.
 
 **Serviços Node/ECS** (scrapers e workers): índice em [`services/README.md`](services/README.md).
 
+## Deploy ECS (recomendado)
+
+**Um único workflow** dispara as duas pipelines em paralelo:
+
+| Workflow | O que faz |
+|----------|-----------|
+| **`deploy-all-ecs-services.yml`** | `ingestion-pipeline` (scraper + document-processor) + `edital-pipeline` (process + validate) |
+
+- **Push em `main`** nos paths das pipelines e código em `services/scraper-runner`, `document-processor`, `process-edital-service`, `validate-edital-service`.
+- **Manual:** Actions → *deploy-all-ecs-services* → Run workflow.
+
+Os workflows **`deploy-scraper-runner`**, **`deploy-document-processor`**, **`deploy-process-edital-service`** e **`deploy-validate-edital-service`** ficaram só com **`workflow_dispatch`** (stacks ECS legados; não correm em push).
+
+ECR `origemlab-ingestion-pipeline-service` e `origemlab-edital-pipeline-service` são **criados automaticamente** no primeiro deploy se ainda não existirem (papel OIDC precisa de `ecr:CreateRepository`). Alternativa única: `infrastructure/ecr-repositories.yml`.
+
+Variáveis obrigatórias: `INGESTION_PIPELINE_STACK_NAME`, `EDITAL_PIPELINE_STACK_NAME`, `VPC_ID`, `SUBNET_IDS`, `SECURITY_GROUP_IDS`, `OLLAMA_BASE_URL`, secrets Supabase.
+
 ## IAM: papel OIDC do GitHub Actions (`AWS_ROLE_ARN`)
 
 Os workflows que fazem `aws cloudformation deploy` nos templates **ECS Fargate** (`infrastructure/ecs-*.yml`) usam o **mesmo** papel que o SAM (`deploy.yml`). O CloudFormation chama a API ECS **com as credenciais desse papel**, não só com o `CAPABILITY_IAM` interno ao stack.
 
-Se o deploy falhar com **AccessDenied** em `ecs:CreateService` (recurso `WorkerService`), o papel (ex.: `GithubActions`) precisa de permissões ECS além de CloudFormation/ECR. Exemplo de statement a **anexar** à política desse papel (ajuste `ACCOUNT_ID` e `REGION`; restrinja `Resource` se quiser menos superfície):
+Se o deploy falhar com **AccessDenied** em `ecs:CreateService` (recurso `WorkerService`) ou ao criar repositório ECR, o papel (ex.: `GithubActions`) precisa de permissões ECS/ECR além de CloudFormation. Exemplo de statement a **anexar** à política desse papel (ajuste `ACCOUNT_ID` e `REGION`; restrinja `Resource` se quiser menos superfície):
 
 ```json
 {
@@ -36,7 +53,10 @@ Se o deploy falhar com **AccessDenied** em `ecs:CreateService` (recurso `WorkerS
     "scheduler:CreateSchedule",
     "scheduler:DeleteSchedule",
     "scheduler:GetSchedule",
-    "scheduler:UpdateSchedule"
+    "scheduler:UpdateSchedule",
+    "ecr:CreateRepository",
+    "ecr:DescribeRepositories",
+    "ecr:PutImageScanningConfiguration"
   ],
   "Resource": "*"
 }
@@ -64,7 +84,7 @@ Um único container executa em sequência **scraper-runner** → **document-proc
 
 ### Deploy
 
-`deploy-ingestion-pipeline-service.yml` → ECR `origemlab-ingestion-pipeline-service` + `infrastructure/ecs-ingestion-pipeline-service.yml`.
+**`deploy-all-ecs-services.yml`** (recomendado) ou `deploy-ingestion-pipeline-service.yml` (só manual). ECR `origemlab-ingestion-pipeline-service` + `infrastructure/ecs-ingestion-pipeline-service.yml`.
 
 | Variável | Descrição |
 |----------|-----------|
@@ -174,7 +194,7 @@ Um único container executa em sequência **process-edital-info** → **validate
 
 ### Deploy
 
-`deploy-edital-pipeline-service.yml` → ECR `origemlab-edital-pipeline-service` + `infrastructure/ecs-edital-pipeline-service.yml`.
+**`deploy-all-ecs-services.yml`** (recomendado) ou `deploy-edital-pipeline-service.yml` (só manual). ECR `origemlab-edital-pipeline-service` + `infrastructure/ecs-edital-pipeline-service.yml`.
 
 | Variável | Descrição |
 |----------|-----------|
