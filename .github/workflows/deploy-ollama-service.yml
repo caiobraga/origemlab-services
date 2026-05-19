@@ -47,7 +47,9 @@ jobs:
         run: |
           REGISTRY="${{ steps.login-ecr.outputs.registry }}"
           IMAGE="${REGISTRY}/origemlab-ollama-service"
-          docker build -f services/ollama-service/Dockerfile -t "${IMAGE}:${IMAGE_TAG}" -t "${IMAGE}:latest" .
+          docker build -f services/ollama-service/Dockerfile \
+            -t "${IMAGE}:${IMAGE_TAG}" -t "${IMAGE}:latest" \
+            services/ollama-service
           docker push "${IMAGE}:${IMAGE_TAG}"
           docker push "${IMAGE}:latest"
           echo "IMAGE_URI=${IMAGE}:${IMAGE_TAG}" >> "$GITHUB_ENV"
