@@ -171,9 +171,9 @@ Resources:
           set -euo pipefail
           # shellcheck source=/dev/null
           [ -f /opt/origemlab/ollama-models.env ] && source /opt/origemlab/ollama-models.env
-          [ -n "${OLLAMA_CHAT_MODEL:-}" ] && ollama pull "${OLLAMA_CHAT_MODEL}"
-          if [ -n "${OLLAMA_EMBED_MODEL:-}" ] && [ "${OLLAMA_EMBED_MODEL}" != "${OLLAMA_CHAT_MODEL:-}" ]; then
-            ollama pull "${OLLAMA_EMBED_MODEL}"
+          if [ -n "$OLLAMA_CHAT_MODEL" ]; then ollama pull "$OLLAMA_CHAT_MODEL"; fi
+          if [ -n "$OLLAMA_EMBED_MODEL" ] && [ "$OLLAMA_EMBED_MODEL" != "$OLLAMA_CHAT_MODEL" ]; then
+            ollama pull "$OLLAMA_EMBED_MODEL"
           fi
           systemctl restart ollama || true
           PULL

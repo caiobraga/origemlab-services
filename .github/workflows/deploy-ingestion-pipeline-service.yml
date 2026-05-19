@@ -133,7 +133,7 @@ jobs:
           ECS_RUN_TASK_AFTER_DEPLOY: ${{ vars.ECS_RUN_TASK_AFTER_DEPLOY }}
         run: |
           set -euo pipefail
-          if [ "${ECS_RUN_TASK_AFTER_DEPLOY:-true}" = "false" ]; then
+          if [ "${ECS_RUN_TASK_AFTER_DEPLOY:-false}" = "false" ]; then
             echo "ECS_RUN_TASK_AFTER_DEPLOY=false — skip run-task."
             exit 0
           fi

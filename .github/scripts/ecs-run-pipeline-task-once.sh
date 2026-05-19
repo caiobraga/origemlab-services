@@ -31,6 +31,7 @@ fi
 NET_CFG="awsvpcConfiguration={subnets=[${SUBNET_IDS}],securityGroups=[${SECURITY_GROUP_IDS}],assignPublicIp=ENABLED}"
 
 echo "ECS run-task: cluster=${CLUSTER} taskDefinition=${TASK_DEF}"
+set +e
 TASK_ARN="$(aws ecs run-task \
   --cluster "${CLUSTER}" \
   --task-definition "${TASK_DEF}" \
@@ -39,10 +40,13 @@ TASK_ARN="$(aws ecs run-task \
   --network-configuration "${NET_CFG}" \
   --query 'tasks[0].taskArn' \
   --output text)"
+RUN_RC=$?
+set -e
 
-if [ -z "${TASK_ARN}" ] || [ "${TASK_ARN}" = "None" ]; then
-  echo "::error::ecs run-task returned no taskArn (check subnets/SG and task execution role)"
-  exit 1
+if [ "${RUN_RC}" -ne 0 ] || [ -z "${TASK_ARN}" ] || [ "${TASK_ARN}" = "None" ]; then
+  echo "::warning::ecs run-task failed or denied — scheduled pipelines still run via EventBridge Scheduler."
+  echo "::warning::Optional IAM on GithubActions: ecs:RunTask, iam:PassRole (task roles)."
+  exit 0
 fi
 
 echo "Started task: ${TASK_ARN}"
