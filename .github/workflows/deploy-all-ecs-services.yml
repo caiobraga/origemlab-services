@@ -22,6 +22,7 @@ on:
       - ".github/workflows/deploy-ingestion-pipeline-service.yml"
       - ".github/workflows/deploy-edital-pipeline-service.yml"
       - ".github/scripts/ensure-ecr-repository.sh"
+      - ".github/scripts/resolve-al2023-ami.sh"
 
 permissions:
   contents: read

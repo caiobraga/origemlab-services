@@ -84,7 +84,8 @@ Além das permissões ECS/CFN existentes, o papel precisa de algo como:
     "iam:RemoveRoleFromInstanceProfile",
     "ssm:SendCommand",
     "ssm:GetCommandInvocation",
-    "ssm:DescribeInstanceInformation"
+    "ssm:DescribeInstanceInformation",
+    "ec2:DescribeImages"
   ],
   "Resource": "*"
 }

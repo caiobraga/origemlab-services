@@ -13,8 +13,8 @@ Parameters:
     Default: t3.2xlarge
     Description: "Para modelos grandes/GPU use ex. g5.2xlarge (requer AMI com drivers NVIDIA ou DLAMI)"
   AmiId:
-    Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
-    Default: /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64
+    Type: AWS::EC2::Image::Id
+    Description: "Amazon Linux 2023 x86_64 — passado pelo workflow (resolve-al2023-ami.sh)"
   VpcId:
     Type: AWS::EC2::VPC::Id
   SubnetId:
