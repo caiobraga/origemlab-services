@@ -53,7 +53,7 @@ Resources:
   OllamaInstanceRole:
     Type: AWS::IAM::Role
     Properties:
-      RoleName: !Sub "${ProjectName}-ollama-ec2-${AWS::StackName}"
+      # Sem RoleName fixo — evita "role already exists" após stack falhado/rollback.
       AssumeRolePolicyDocument:
         Version: "2012-10-17"
         Statement:
@@ -113,14 +113,19 @@ Resources:
 
   OllamaInstance:
     Type: AWS::EC2::Instance
+    DependsOn: OllamaInstanceProfile
     Properties:
       ImageId: !Ref AmiId
       InstanceType: !Ref InstanceType
-      SubnetId: !Ref SubnetId
       IamInstanceProfile: !Ref OllamaInstanceProfile
-      SecurityGroupIds:
-        - !Ref OllamaSecurityGroup
       KeyName: !If [HasKeyPair, !Ref KeyPairName, !Ref AWS::NoValue]
+      # Subnet + SG só via ENI; IP público para userdata (ollama pull) antes do EIP.
+      NetworkInterfaces:
+        - AssociatePublicIpAddress: true
+          DeviceIndex: 0
+          GroupSet:
+            - !Ref OllamaSecurityGroup
+          SubnetId: !Ref SubnetId
       BlockDeviceMappings:
         - DeviceName: /dev/xvda
           Ebs:

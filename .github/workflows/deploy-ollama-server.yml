@@ -82,12 +82,22 @@ jobs:
           [ -n "${KEY_PAIR_NAME:-}" ] && OVERRIDES+=("KeyPairName=${KEY_PAIR_NAME}")
           OVERRIDES+=("AmiId=${RESOLVED_AMI}")
 
-          aws cloudformation deploy \
+          if ! aws cloudformation deploy \
             --stack-name "${STACK_NAME}" \
             --template-file infrastructure/ec2-ollama-server.yml \
-            --capabilities CAPABILITY_NAMED_IAM \
+            --capabilities CAPABILITY_IAM \
             --parameter-overrides "${OVERRIDES[@]}" \
-            --no-fail-on-empty-changeset
+            --no-fail-on-empty-changeset; then
+            echo "::group::Recent stack events (origemlab-ollama failure)"
+            aws cloudformation describe-stack-events \
+              --stack-name "${STACK_NAME}" \
+              --max-items 25 \
+              --query 'StackEvents[*].[Timestamp,ResourceStatus,ResourceType,LogicalResourceId,ResourceStatusReason]' \
+              --output table || true
+            echo "::endgroup::"
+            echo "::error::Stack ${STACK_NAME} failed. If IAM role already exists from a prior attempt, delete stack origemlab-ollama (or the role origemlab-ollama-ec2-origemlab-ollama) and retry."
+            exit 1
+          fi
 
           OLLAMA_URL="$(aws cloudformation describe-stacks --stack-name "${STACK_NAME}" \
             --query "Stacks[0].Outputs[?OutputKey=='OllamaBaseUrl'].OutputValue" --output text)"

@@ -3,6 +3,16 @@
 Stack CloudFormation: `infrastructure/ec2-ollama-server.yml`  
 Workflow: `.github/workflows/deploy-ollama-server.yml`
 
+## Se o stack `origemlab-ollama` falhar
+
+1. No log do GitHub Actions, abra o grupo **Recent stack events** (motivo exato).
+2. Causas comuns:
+   - **IAM role já existe** após deploy anterior (`origemlab-ollama-ec2-origemlab-ollama`) → apague o stack em `ROLLBACK_COMPLETE` ou o role órfão no IAM e rode de novo.
+   - **Subnet fora da VPC** (`VPC_ID` ≠ VPC da subnet) → use subnet da mesma VPC dos tasks ECS.
+   - **Subnet privada sem NAT** → use subnet **pública** (`MapPublicIpOnLaunch`) ou defina `OLLAMA_SERVER_SUBNET_ID` para uma subnet pública.
+   - **Limite de EIP** na conta → liberte EIPs não usados.
+3. Console: CloudFormation → stack `origemlab-ollama` → aba **Events**.
+
 ## O que provisiona
 
 - **EC2** com Ollama (`OLLAMA_HOST=0.0.0.0:11434`)
@@ -73,6 +83,8 @@ Além das permissões ECS/CFN existentes, o papel precisa de algo como:
     "ec2:RevokeSecurityGroupIngress",
     "iam:CreateRole",
     "iam:DeleteRole",
+    "iam:GetRole",
+    "iam:ListRoles",
     "iam:PutRolePolicy",
     "iam:DeleteRolePolicy",
     "iam:AttachRolePolicy",
