@@ -2,7 +2,7 @@
 # Substitui os dois workers contínuos separados — use ECS_ORCHESTRATION_MODE=scheduled (default).
 #
 # Required repo variables:
-#   EDITAL_PIPELINE_STACK_NAME   (e.g. origemlab-edital-pipeline)
+#   EDITAL_PIPELINE_STACK_NAME   optional (default origemlab-edital-pipeline)
 #   VPC_ID, SUBNET_IDS, SECURITY_GROUP_IDS
 #   OLLAMA_BASE_URL
 # Optional:
@@ -92,8 +92,9 @@ jobs:
           EVENT_BUS_NAME: ${{ vars.EVENT_BUS_NAME }}
         run: |
           set -euo pipefail
-          : "${STACK_NAME:?Set repo variable EDITAL_PIPELINE_STACK_NAME}"
+          STACK_NAME="${STACK_NAME:-origemlab-edital-pipeline}"
           STACK_NAME="$(bash .github/scripts/normalize-cloudformation-stack-name.sh "${STACK_NAME}")"
+          echo "CloudFormation stack: ${STACK_NAME} (override: EDITAL_PIPELINE_STACK_NAME)"
           : "${VPC_ID:?Set repo variable VPC_ID}"
           : "${SUBNET_IDS:?Set repo variable SUBNET_IDS}"
           : "${SECURITY_GROUP_IDS:?Set repo variable SECURITY_GROUP_IDS}"

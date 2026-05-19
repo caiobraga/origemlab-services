@@ -19,7 +19,7 @@ Os workflows **`deploy-scraper-runner`**, **`deploy-document-processor`**, **`de
 
 ECR `origemlab-ingestion-pipeline-service` e `origemlab-edital-pipeline-service` são **criados automaticamente** no primeiro deploy se ainda não existirem (papel OIDC precisa de `ecr:CreateRepository`). Alternativa única: `infrastructure/ecr-repositories.yml`.
 
-Variáveis obrigatórias: `INGESTION_PIPELINE_STACK_NAME`, `EDITAL_PIPELINE_STACK_NAME`, `VPC_ID`, `SUBNET_IDS`, `SECURITY_GROUP_IDS`, `OLLAMA_BASE_URL`, secrets Supabase.
+Variáveis obrigatórias: `VPC_ID`, `SUBNET_IDS`, `SECURITY_GROUP_IDS`, `OLLAMA_BASE_URL`, secrets Supabase. Stacks (opcional): `INGESTION_PIPELINE_STACK_NAME` (default `origemlab-ingestion-pipeline`), `EDITAL_PIPELINE_STACK_NAME` (default `origemlab-edital-pipeline`).
 
 ## IAM: papel OIDC do GitHub Actions (`AWS_ROLE_ARN`)
 
@@ -198,7 +198,7 @@ Um único container executa em sequência **process-edital-info** → **validate
 
 | Variável | Descrição |
 |----------|-----------|
-| `EDITAL_PIPELINE_STACK_NAME` | Stack CloudFormation (ex. `origemlab-edital-pipeline`) |
+| `EDITAL_PIPELINE_STACK_NAME` | Opcional (default `origemlab-edital-pipeline`) |
 | `VPC_ID`, `SUBNET_IDS`, `SECURITY_GROUP_IDS` | Rede (partilhadas com outros serviços) |
 | Secrets | `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY` |
 | `OLLAMA_BASE_URL` | Ollama |
