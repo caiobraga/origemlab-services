@@ -10,7 +10,7 @@ Parameters:
     Default: origemlab
   InstanceType:
     Type: String
-    Default: t3.2xlarge
+    Default: t3.xlarge
     Description: "Para modelos grandes/GPU use ex. g5.2xlarge (requer AMI com drivers NVIDIA ou DLAMI)"
   AmiId:
     Type: AWS::EC2::Image::Id
@@ -69,6 +69,7 @@ Resources:
 
   OllamaInstanceProfile:
     Type: AWS::IAM::InstanceProfile
+    DependsOn: OllamaInstanceRole
     Properties:
       Roles:
         - !Ref OllamaInstanceRole
@@ -113,19 +114,17 @@ Resources:
 
   OllamaInstance:
     Type: AWS::EC2::Instance
-    DependsOn: OllamaInstanceProfile
+    DependsOn:
+      - OllamaInstanceProfile
+      - OllamaInstanceRole
     Properties:
       ImageId: !Ref AmiId
       InstanceType: !Ref InstanceType
+      SubnetId: !Ref SubnetId
+      SecurityGroupIds:
+        - !Ref OllamaSecurityGroup
       IamInstanceProfile: !Ref OllamaInstanceProfile
       KeyName: !If [HasKeyPair, !Ref KeyPairName, !Ref AWS::NoValue]
-      # Subnet + SG só via ENI; IP público para userdata (ollama pull) antes do EIP.
-      NetworkInterfaces:
-        - AssociatePublicIpAddress: true
-          DeviceIndex: 0
-          GroupSet:
-            - !Ref OllamaSecurityGroup
-          SubnetId: !Ref SubnetId
       BlockDeviceMappings:
         - DeviceName: /dev/xvda
           Ebs:
@@ -135,7 +134,7 @@ Resources:
       UserData:
         Fn::Base64: !Sub |
           #!/bin/bash
-          set -euxo pipefail
+          set -uxo pipefail
           exec > /var/log/ollama-userdata.log 2>&1
 
           install -d -m 0755 /etc/systemd/system/ollama.service.d
