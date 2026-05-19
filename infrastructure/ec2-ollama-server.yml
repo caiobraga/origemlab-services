@@ -63,9 +63,6 @@ Resources:
             Action: sts:AssumeRole
       ManagedPolicyArns:
         - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
-      Tags:
-        - Key: Project
-          Value: !Ref ProjectName
 
   OllamaInstanceProfile:
     Type: AWS::IAM::InstanceProfile
@@ -77,19 +74,14 @@ Resources:
   OllamaSecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
-      GroupDescription: Ollama API (11434) — origemlab
+      GroupDescription: "origemlab Ollama API on port 11434"
       VpcId: !Ref VpcId
       SecurityGroupIngress:
         - IpProtocol: tcp
           FromPort: 11434
           ToPort: 11434
           CidrIp: !Ref VpcCidrBlock
-          Description: Ollama from VPC (ECS Fargate, etc.)
-      Tags:
-        - Key: Name
-          Value: !Sub "${ProjectName}-ollama"
-        - Key: Project
-          Value: !Ref ProjectName
+          Description: Ollama from VPC
 
   OllamaAdditionalIngress:
     Type: AWS::EC2::SecurityGroupIngress
@@ -106,11 +98,6 @@ Resources:
     Type: AWS::EC2::EIP
     Properties:
       Domain: vpc
-      Tags:
-        - Key: Name
-          Value: !Sub "${ProjectName}-ollama-eip"
-        - Key: Project
-          Value: !Ref ProjectName
 
   OllamaInstance:
     Type: AWS::EC2::Instance
@@ -182,11 +169,6 @@ Resources:
           systemctl restart ollama || true
           PULL
           chmod +x /opt/origemlab/pull-models.sh
-      Tags:
-        - Key: Name
-          Value: !Sub "${ProjectName}-ollama"
-        - Key: Project
-          Value: !Ref ProjectName
 
   OllamaEipAssociation:
     Type: AWS::EC2::EIPAssociation

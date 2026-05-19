@@ -97,7 +97,9 @@ Além das permissões ECS/CFN existentes, o papel precisa de algo como:
     "ssm:SendCommand",
     "ssm:GetCommandInvocation",
     "ssm:DescribeInstanceInformation",
-    "ec2:DescribeImages"
+    "ec2:DescribeImages",
+    "ec2:CreateTags",
+    "ec2:DeleteTags"
   ],
   "Resource": "*"
 }
