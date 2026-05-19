@@ -27,7 +27,11 @@ Variáveis obrigatórias: `VPC_ID`, `SUBNET_IDS`, `SECURITY_GROUP_IDS`, `OLLAMA_
 
 Os workflows que fazem `aws cloudformation deploy` nos templates **ECS Fargate** (`infrastructure/ecs-*.yml`) usam o **mesmo** papel que o SAM (`deploy.yml`). O CloudFormation chama a API ECS **com as credenciais desse papel**, não só com o `CAPABILITY_IAM` interno ao stack.
 
-Se o deploy falhar com **AccessDenied** em `ecs:CreateService` (recurso `WorkerService`) ou ao criar repositório ECR, o papel (ex.: `GithubActions`) precisa de permissões ECS/ECR além de CloudFormation. Exemplo de statement a **anexar** à política desse papel (ajuste `ACCOUNT_ID` e `REGION`; restrinja `Resource` se quiser menos superfície):
+Se o deploy falhar com **AccessDenied** em `ecs:CreateService`, `elasticloadbalancing:CreateLoadBalancer` (stack **Ollama ECS + NLB**) ou ao criar repositório ECR, o papel (ex.: `GithubActions`) precisa de permissões ECS/ECR/ELB além de CloudFormation.
+
+**Ollama (`origemlab-ollama-service`):** anexe o statement em [`.github/aws-iam-policy-github-actions-elb.json`](.github/aws-iam-policy-github-actions-elb.json) (ou crie uma política gerenciada e associe ao papel). No IAM: *Policies* → *Create policy* → JSON → colar o ficheiro → *Attach* ao role `GithubActions`.
+
+Exemplo de statement ECS/Scheduler/ECR a **anexar** à mesma política (ajuste `ACCOUNT_ID` e `REGION`; restrinja `Resource` se quiser menos superfície):
 
 ```json
 {
@@ -65,6 +69,8 @@ Se o deploy falhar com **AccessDenied** em `ecs:CreateService` (recurso `WorkerS
 ```
 
 Para stacks com `OrchestrationMode=scheduled`, o EventBridge Scheduler também precisa das ações `scheduler:*` acima. O SAM continua a precisar de Lambda, EventBridge (regras), S3 (artefatos), etc., conforme o comentário em `.github/workflows/deploy.yml`.
+
+Se o stack `origemlab-ollama-service` ficar em **`ROLLBACK_COMPLETE`**, o workflow apaga-o automaticamente no próximo run (script `cfn-delete-failed-stack.sh`); só é preciso corrigir IAM e rodar de novo.
 
 Após cada deploy CloudFormation bem-sucedido dos workers ECS (`continuous`), os workflows chamam `.github/scripts/ecs-force-rollout-after-cfn.sh`, que executa `ecs:UpdateService` com `--force-new-deployment` para substituir tasks antigas pela nova task definition (imagem + env). Sem isso, uma task pode continuar dias com código/modelo antigos mesmo após push no ECR.
 

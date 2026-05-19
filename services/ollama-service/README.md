@@ -10,6 +10,12 @@ Endpoint **estável** (DNS do Network Load Balancer), sempre ligado, como um “
 | Stack default | `origemlab-ollama-service` |
 | Cluster ECS | `origemlab-ollama` |
 
+## IAM (obrigatório no papel `GithubActions`)
+
+O deploy cria **Network Load Balancer** + target group. Sem permissões ELB o CloudFormation falha com `elasticloadbalancing:CreateLoadBalancer` **AccessDenied**.
+
+Anexe ao role usado em `AWS_ROLE_ARN` o JSON em [`.github/aws-iam-policy-github-actions-elb.json`](../../.github/aws-iam-policy-github-actions-elb.json).
+
 ## Variáveis GitHub
 
 | Variável | Obrigatória | Default |

@@ -109,6 +109,13 @@ jobs:
             --parameter-overrides "${OVERRIDES[@]}" \
             --no-fail-on-empty-changeset; then
             echo "=== CloudFormation failure: ${STACK_NAME} ==="
+            if aws cloudformation describe-stack-events \
+              --stack-name "${STACK_NAME}" \
+              --max-items 5 \
+              --query 'StackEvents[?contains(ResourceStatusReason, `elasticloadbalancing`) || contains(ResourceStatusReason, `AccessDenied`)].ResourceStatusReason' \
+              --output text 2>/dev/null | grep -q .; then
+              echo "::error::Papel GithubActions sem permissao ELB. Anexe .github/aws-iam-policy-github-actions-elb.json ao role AWS_ROLE_ARN (ver README IAM)."
+            fi
             aws cloudformation describe-stack-events \
               --stack-name "${STACK_NAME}" \
               --max-items 40 \

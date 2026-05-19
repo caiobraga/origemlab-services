@@ -10,6 +10,7 @@
 # ECS Fargate stacks (document-processor, process/validate-edital, scraper-runner): same role
 # must allow ecs:CreateService / UpdateService / RegisterTaskDefinition, logs, and (if scheduled)
 # EventBridge Scheduler — see README section "IAM: papel OIDC do GitHub Actions".
+# Ollama ECS stack also needs elasticloadbalancing:* (NLB) — .github/aws-iam-policy-github-actions-elb.json
 # Required GitHub Actions repository secrets:
 #   TELEGRAM_BOT_TOKEN
 #   TELEGRAM_CHAT_ID
