@@ -47,6 +47,7 @@ jobs:
           OLLAMA_EMBED_MODEL: ${{ vars.OLLAMA_EMBED_MODEL }}
           ADDITIONAL_INGRESS_CIDR: ${{ vars.OLLAMA_SERVER_ADDITIONAL_INGRESS_CIDR }}
           PUBLIC_ACCESS_CIDR: ${{ vars.OLLAMA_SERVER_PUBLIC_ACCESS_CIDR }}
+          SSH_ACCESS_CIDR: ${{ vars.OLLAMA_SERVER_SSH_ACCESS_CIDR }}
           KEY_PAIR_NAME: ${{ vars.OLLAMA_SERVER_KEY_PAIR_NAME }}
           AMI_ID: ${{ vars.OLLAMA_SERVER_AMI_ID }}
         run: |
@@ -83,7 +84,11 @@ jobs:
           [ -n "${ADDITIONAL_INGRESS_CIDR:-}" ] && OVERRIDES+=("AdditionalIngressCidr=${ADDITIONAL_INGRESS_CIDR}")
           PUBLIC_CIDR="$(printf '%s' "${PUBLIC_ACCESS_CIDR:-0.0.0.0/0}" | tr -d '[:space:]')"
           [ -n "${PUBLIC_CIDR}" ] && OVERRIDES+=("PublicAccessCidr=${PUBLIC_CIDR}")
-          [ -n "${KEY_PAIR_NAME:-}" ] && OVERRIDES+=("KeyPairName=${KEY_PAIR_NAME}")
+          SSH_CIDR="$(printf '%s' "${SSH_ACCESS_CIDR:-0.0.0.0/0}" | tr -d '[:space:]')"
+          [ -n "${SSH_CIDR}" ] && OVERRIDES+=("SshAccessCidr=${SSH_CIDR}")
+          KEY_PAIR="$(printf '%s' "${KEY_PAIR_NAME:-ia-server-keys}" | tr -d '[:space:]')"
+          OVERRIDES+=("KeyPairName=${KEY_PAIR}")
+          echo "EC2 KeyPairName=${KEY_PAIR}"
           OVERRIDES+=("AmiId=${RESOLVED_AMI}")
 
           bash .github/scripts/cfn-delete-failed-stack.sh "${STACK_NAME}"

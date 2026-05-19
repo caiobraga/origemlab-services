@@ -42,6 +42,35 @@ Depois do primeiro deploy, copie o output **`OllamaBaseUrl`** para:
 - `origemlab-services` → `OLLAMA_BASE_URL`
 - `origemlab-backend` → `OLLAMA_BASE_URL` (+ `OLLAMA_MODEL`)
 
+## SSH e Ollama na Internet (CloudFormation)
+
+O stack configura:
+
+| Porta | Origem (default) | Uso |
+|-------|------------------|-----|
+| **11434** | `0.0.0.0/0` (`PublicAccessCidr`) | Ollama (browser, dev local) |
+| **22** | `0.0.0.0/0` (`SshAccessCidr`) | SSH |
+| **11434** | VPC CIDR | ECS / EB na mesma VPC |
+
+Variáveis GitHub (opcional, restringir em prod):
+
+- `OLLAMA_SERVER_PUBLIC_ACCESS_CIDR` — ex. `seu-ip/32`
+- `OLLAMA_SERVER_SSH_ACCESS_CIDR` — ex. `seu-ip/32`
+- `OLLAMA_SERVER_KEY_PAIR_NAME` — opcional (default no deploy: **`ia-server-keys`**)
+
+### SSH com key pair existente
+
+1. O key pair **`ia-server-keys`** deve existir na região (EC2 → Key pairs).
+2. Opcional no GitHub: `OLLAMA_SERVER_KEY_PAIR_NAME=ia-server-keys` (já é o default do workflow).
+3. Redeploy **deploy-ollama-server** (se a instância foi criada sem chave, o update pode **recriar** a EC2 para associar a chave).
+
+**Importante:** `KeyPairName` só aplica no **primeiro launch** da EC2. Se a instância já existe sem chave, o update do stack **abre a porta 22** mas SSH ainda precisa de **nova instância** com chave (ou use **SSM**, sem `.pem`).
+
+```bash
+chmod 400 ia-server-keys.pem
+ssh -i ia-server-keys.pem ec2-user@<ElasticIP>
+```
+
 ## Testar se o Ollama responde
 
 O browser em `http://<ElasticIP>:11434/` pode não mostrar HTML; use:

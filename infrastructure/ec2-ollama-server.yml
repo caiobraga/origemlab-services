@@ -26,7 +26,11 @@ Parameters:
   KeyPairName:
     Type: String
     Default: ""
-    Description: "Opcional; preferir SSM Session Manager"
+    Description: "Nome de um EC2 Key Pair existente na regiao (default no deploy: ia-server-keys). Obrigatorio para SSH; SSM funciona sem chave."
+  SshAccessCidr:
+    Type: String
+    Default: "0.0.0.0/0"
+    Description: "CIDR para TCP 22 (SSH). Use seu-ip/32 em prod; vazio = nao abre SSH."
   RootVolumeSizeGb:
     Type: Number
     Default: 150
@@ -53,6 +57,7 @@ Conditions:
   HasKeyPair: !Not [!Equals [!Ref KeyPairName, ""]]
   HasAdditionalCidr: !Not [!Equals [!Ref AdditionalIngressCidr, ""]]
   HasPublicAccessCidr: !Not [!Equals [!Ref PublicAccessCidr, ""]]
+  HasSshAccessCidr: !Not [!Equals [!Ref SshAccessCidr, ""]]
 
 Resources:
   OllamaInstanceRole:
@@ -110,6 +115,17 @@ Resources:
       CidrIp: !Ref PublicAccessCidr
       Description: Ollama from Internet or local dev
 
+  OllamaSshIngress:
+    Type: AWS::EC2::SecurityGroupIngress
+    Condition: HasSshAccessCidr
+    Properties:
+      GroupId: !Ref OllamaSecurityGroup
+      IpProtocol: tcp
+      FromPort: 22
+      ToPort: 22
+      CidrIp: !Ref SshAccessCidr
+      Description: SSH access
+
   OllamaElasticIp:
     Type: AWS::EC2::EIP
     Properties:
@@ -145,6 +161,9 @@ Resources:
           [Service]
           Environment="OLLAMA_HOST=0.0.0.0:11434"
           OVERRIDE
+
+          systemctl enable sshd
+          systemctl start sshd || true
 
           curl -fsSL https://ollama.com/install.sh | sh
           systemctl daemon-reload
@@ -209,5 +228,8 @@ Outputs:
   SecurityGroupId:
     Value: !Ref OllamaSecurityGroup
   SsmSessionHint:
-    Description: "Conectar sem SSH: aws ssm start-session --target <InstanceId>"
+    Description: "SSM (sem chave SSH)"
     Value: !Sub "aws ssm start-session --target ${OllamaInstance} --region ${AWS::Region}"
+  SshHint:
+    Description: "SSH so funciona se KeyPairName foi definido no 1o launch"
+    Value: !Sub "ssh -i sua-chave.pem ec2-user@${OllamaElasticIp}"
