@@ -82,6 +82,8 @@ jobs:
           [ -n "${KEY_PAIR_NAME:-}" ] && OVERRIDES+=("KeyPairName=${KEY_PAIR_NAME}")
           OVERRIDES+=("AmiId=${RESOLVED_AMI}")
 
+          bash .github/scripts/cfn-delete-failed-stack.sh "${STACK_NAME}"
+
           if ! aws cloudformation deploy \
             --stack-name "${STACK_NAME}" \
             --template-file infrastructure/ec2-ollama-server.yml \
@@ -95,7 +97,7 @@ jobs:
               --query 'StackEvents[*].[Timestamp,ResourceStatus,ResourceType,LogicalResourceId,ResourceStatusReason]' \
               --output table || true
             echo "::endgroup::"
-            echo "::error::Stack ${STACK_NAME} failed. If IAM role already exists from a prior attempt, delete stack origemlab-ollama (or the role origemlab-ollama-ec2-origemlab-ollama) and retry."
+            echo "::error::Stack ${STACK_NAME} failed — see events above. On retry, ROLLBACK_COMPLETE stacks are deleted automatically."
             exit 1
           fi
 
