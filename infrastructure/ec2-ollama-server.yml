@@ -1,0 +1,211 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  EC2 dedicado com Ollama (chat + embeddings), Elastic IP estável e acesso via SSM.
+  Os clientes (ECS, Elastic Beanstalk) usam OLLAMA_BASE_URL=http://<ElasticIP>:11434;
+  nomes dos modelos vêm das variáveis GitHub (OLLAMA_MODEL, OLLAMA_CHAT_MODEL, OLLAMA_EMBED_MODEL).
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: origemlab
+  InstanceType:
+    Type: String
+    Default: t3.2xlarge
+    Description: "Para modelos grandes/GPU use ex. g5.2xlarge (requer AMI com drivers NVIDIA ou DLAMI)"
+  AmiId:
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
+    Default: /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+  SubnetId:
+    Type: AWS::EC2::Subnet::Id
+    Description: "Subnet com rota à Internet (pública ou via NAT) para ollama pull no bootstrap"
+  VpcCidrBlock:
+    Type: String
+    Description: "CIDR da VPC (ex. 10.0.0.0/16) — tráfego ECS/EB na mesma VPC"
+  KeyPairName:
+    Type: String
+    Default: ""
+    Description: "Opcional; preferir SSM Session Manager"
+  RootVolumeSizeGb:
+    Type: Number
+    Default: 150
+    MinValue: 50
+    MaxValue: 2000
+  InitialChatModel:
+    Type: String
+    Default: "qwen2.5:7b"
+    Description: "Modelo chat puxado no primeiro boot (alterações depois via SSM/workflow)"
+  InitialEmbedModel:
+    Type: String
+    Default: "mxbai-embed-large:latest"
+    Description: "Modelo de embedding puxado no primeiro boot"
+  AdditionalIngressCidr:
+    Type: String
+    Default: ""
+    Description: "CIDR extra para porta 11434 (ex. rede do EB se estiver fora da VPC)"
+
+Conditions:
+  HasKeyPair: !Not [!Equals [!Ref KeyPairName, ""]]
+  HasAdditionalCidr: !Not [!Equals [!Ref AdditionalIngressCidr, ""]]
+
+Resources:
+  OllamaInstanceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${ProjectName}-ollama-ec2-${AWS::StackName}"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+
+  OllamaInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles:
+        - !Ref OllamaInstanceRole
+
+  OllamaSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Ollama API (11434) — origemlab
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 11434
+          ToPort: 11434
+          CidrIp: !Ref VpcCidrBlock
+          Description: Ollama from VPC (ECS Fargate, etc.)
+      Tags:
+        - Key: Name
+          Value: !Sub "${ProjectName}-ollama"
+        - Key: Project
+          Value: !Ref ProjectName
+
+  OllamaAdditionalIngress:
+    Type: AWS::EC2::SecurityGroupIngress
+    Condition: HasAdditionalCidr
+    Properties:
+      GroupId: !Ref OllamaSecurityGroup
+      IpProtocol: tcp
+      FromPort: 11434
+      ToPort: 11434
+      CidrIp: !Ref AdditionalIngressCidr
+      Description: Ollama extra CIDR (EB / admin)
+
+  OllamaElasticIp:
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: vpc
+      Tags:
+        - Key: Name
+          Value: !Sub "${ProjectName}-ollama-eip"
+        - Key: Project
+          Value: !Ref ProjectName
+
+  OllamaInstance:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: !Ref AmiId
+      InstanceType: !Ref InstanceType
+      SubnetId: !Ref SubnetId
+      IamInstanceProfile: !Ref OllamaInstanceProfile
+      SecurityGroupIds:
+        - !Ref OllamaSecurityGroup
+      KeyName: !If [HasKeyPair, !Ref KeyPairName, !Ref AWS::NoValue]
+      BlockDeviceMappings:
+        - DeviceName: /dev/xvda
+          Ebs:
+            VolumeSize: !Ref RootVolumeSizeGb
+            VolumeType: gp3
+            DeleteOnTermination: true
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          set -euxo pipefail
+          exec > /var/log/ollama-userdata.log 2>&1
+
+          install -d -m 0755 /etc/systemd/system/ollama.service.d
+          cat > /etc/systemd/system/ollama.service.d/override.conf <<'OVERRIDE'
+          [Service]
+          Environment="OLLAMA_HOST=0.0.0.0:11434"
+          OVERRIDE
+
+          curl -fsSL https://ollama.com/install.sh | sh
+          systemctl daemon-reload
+          systemctl enable ollama
+          systemctl start ollama
+
+          for i in $(seq 1 90); do
+            if curl -sf http://127.0.0.1:11434/api/tags >/dev/null; then
+              break
+            fi
+            sleep 5
+          done
+
+          CHAT="${InitialChatModel}"
+          EMBED="${InitialEmbedModel}"
+          install -d -m 0755 /opt/origemlab
+          if [ -n "$CHAT" ]; then
+            ollama pull "$CHAT" || true
+          fi
+          if [ -n "$EMBED" ] && [ "$EMBED" != "$CHAT" ]; then
+            ollama pull "$EMBED" || true
+          fi
+
+          cat > /opt/origemlab/ollama-models.env <<MODELS
+          OLLAMA_CHAT_MODEL=$CHAT
+          OLLAMA_EMBED_MODEL=$EMBED
+          MODELS
+
+          cat > /opt/origemlab/pull-models.sh <<'PULL'
+          #!/bin/bash
+          set -euo pipefail
+          # shellcheck source=/dev/null
+          [ -f /opt/origemlab/ollama-models.env ] && source /opt/origemlab/ollama-models.env
+          [ -n "${OLLAMA_CHAT_MODEL:-}" ] && ollama pull "${OLLAMA_CHAT_MODEL}"
+          if [ -n "${OLLAMA_EMBED_MODEL:-}" ] && [ "${OLLAMA_EMBED_MODEL}" != "${OLLAMA_CHAT_MODEL:-}" ]; then
+            ollama pull "${OLLAMA_EMBED_MODEL}"
+          fi
+          systemctl restart ollama || true
+          PULL
+          chmod +x /opt/origemlab/pull-models.sh
+      Tags:
+        - Key: Name
+          Value: !Sub "${ProjectName}-ollama"
+        - Key: Project
+          Value: !Ref ProjectName
+
+  OllamaEipAssociation:
+    Type: AWS::EC2::EIPAssociation
+    Properties:
+      AllocationId: !GetAtt OllamaElasticIp.AllocationId
+      InstanceId: !Ref OllamaInstance
+
+Outputs:
+  OllamaBaseUrl:
+    Description: "Defina OLLAMA_BASE_URL nos repos (backend + services) com este valor"
+    Value: !Sub "http://${OllamaElasticIp}:11434"
+    Export:
+      Name: !Sub "${AWS::StackName}-OllamaBaseUrl"
+  ElasticIpAddress:
+    Value: !Ref OllamaElasticIp
+    Export:
+      Name: !Sub "${AWS::StackName}-ElasticIp"
+  InstanceId:
+    Value: !Ref OllamaInstance
+    Export:
+      Name: !Sub "${AWS::StackName}-InstanceId"
+  SecurityGroupId:
+    Value: !Ref OllamaSecurityGroup
+  SsmSessionHint:
+    Description: "Conectar sem SSH: aws ssm start-session --target <InstanceId>"
+    Value: !Sub "aws ssm start-session --target ${OllamaInstance} --region ${AWS::Region}"

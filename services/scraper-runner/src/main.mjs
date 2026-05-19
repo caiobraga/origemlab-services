@@ -23,6 +23,8 @@ import { makeEventBase, publishDomainEvent } from "./eventbridge.mjs";
 import { loadEnv } from "./loadEnv.mjs";
 import { describeFetchError } from "./httpFetch.mjs";
 import dns from "node:dns";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 function parseArgs(argv) {
   const args = { source: "all" };
@@ -217,8 +219,8 @@ async function runOne(source) {
   return { ok: true, fonte: source, total: upserts.length, new_editais: newEditais.length, new_pdfs: newPdfs };
 }
 
-async function main() {
-  const { source } = parseArgs(process.argv.slice(2));
+export async function runScraperBatch(argv = process.argv.slice(2)) {
+  const { source } = parseArgs(argv);
   if (source === "all") {
     const out = {};
     const keys = Object.keys(SOURCES);
@@ -291,26 +293,32 @@ async function main() {
   return await runOne(source);
 }
 
-try {
-  const res = await main();
-  console.log(JSON.stringify(res));
-} catch (e) {
-  const err = e instanceof Error ? e : new Error(String(e));
-  const component = "scraper.runner";
+const isDirectCliRun =
+  typeof process.argv[1] === "string" &&
+  path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+
+if (isDirectCliRun) {
   try {
-    await publishDomainEvent(
-      makeEventBase({
-        name: "JobFailed",
-        severity: "error",
-        message: `Scraper runner failed: ${err.message}`,
-        component,
-        error: { type: err.name, message: err.message, stack: err.stack },
-      }),
-    );
-  } catch {
-    // Best-effort: don't hide the original error.
+    const res = await runScraperBatch();
+    console.log(JSON.stringify(res));
+  } catch (e) {
+    const err = e instanceof Error ? e : new Error(String(e));
+    const component = "scraper.runner";
+    try {
+      await publishDomainEvent(
+        makeEventBase({
+          name: "JobFailed",
+          severity: "error",
+          message: `Scraper runner failed: ${err.message}`,
+          component,
+          error: { type: err.name, message: err.message, stack: err.stack },
+        }),
+      );
+    } catch {
+      // Best-effort: don't hide the original error.
+    }
+    console.error(err);
+    process.exit(1);
   }
-  console.error(err);
-  process.exit(1);
 }
 

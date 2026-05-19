@@ -1,0 +1,106 @@
+# EC2 + Elastic IP + Ollama (modelos configuráveis via variáveis GitHub).
+# Depois do primeiro deploy, defina OLLAMA_BASE_URL=http://<ElasticIP>:11434 em backend e services.
+name: deploy-ollama-server
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "infrastructure/ec2-ollama-server.yml"
+      - ".github/workflows/deploy-ollama-server.yml"
+      - ".github/scripts/ollama-ssm-sync-models.sh"
+  workflow_dispatch: {}
+
+permissions:
+  id-token: write
+  contents: read
+
+concurrency:
+  group: ollama-server-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  AWS_REGION: ${{ vars.AWS_REGION }}
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: ${{ env.AWS_REGION }}
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+
+      - name: Deploy Ollama EC2 stack (CloudFormation)
+        env:
+          STACK_NAME: ${{ vars.OLLAMA_SERVER_STACK_NAME }}
+          VPC_ID: ${{ vars.VPC_ID }}
+          SUBNET_ID: ${{ vars.OLLAMA_SERVER_SUBNET_ID }}
+          INSTANCE_TYPE: ${{ vars.OLLAMA_SERVER_INSTANCE_TYPE }}
+          ROOT_VOLUME_GB: ${{ vars.OLLAMA_SERVER_ROOT_VOLUME_GB }}
+          OLLAMA_CHAT_MODEL: ${{ vars.OLLAMA_CHAT_MODEL }}
+          OLLAMA_EMBED_MODEL: ${{ vars.OLLAMA_EMBED_MODEL }}
+          ADDITIONAL_INGRESS_CIDR: ${{ vars.OLLAMA_SERVER_ADDITIONAL_INGRESS_CIDR }}
+          KEY_PAIR_NAME: ${{ vars.OLLAMA_SERVER_KEY_PAIR_NAME }}
+          AMI_ID: ${{ vars.OLLAMA_SERVER_AMI_ID }}
+        run: |
+          set -euo pipefail
+          : "${STACK_NAME:?Set repo variable OLLAMA_SERVER_STACK_NAME (ex. origemlab-ollama)}"
+          STACK_NAME="$(bash .github/scripts/normalize-cloudformation-stack-name.sh "${STACK_NAME}")"
+          : "${VPC_ID:?Set repo variable VPC_ID}"
+          : "${SUBNET_ID:?Set repo variable OLLAMA_SERVER_SUBNET_ID (subnet pública ou com NAT)}"
+
+          VPC_CIDR="$(aws ec2 describe-vpcs --vpc-ids "${VPC_ID}" --query 'Vpcs[0].CidrBlock' --output text)"
+          CHAT="${OLLAMA_CHAT_MODEL:-qwen2.5:7b}"
+          EMBED="${OLLAMA_EMBED_MODEL:-mxbai-embed-large:latest}"
+          ITYPE="${INSTANCE_TYPE:-t3.2xlarge}"
+          VOL="${ROOT_VOLUME_GB:-150}"
+
+          OVERRIDES=(
+            "VpcId=${VPC_ID}"
+            "SubnetId=${SUBNET_ID}"
+            "VpcCidrBlock=${VPC_CIDR}"
+            "InstanceType=${ITYPE}"
+            "InitialChatModel=${CHAT}"
+            "InitialEmbedModel=${EMBED}"
+            "RootVolumeSizeGb=${VOL}"
+          )
+          [ -n "${ADDITIONAL_INGRESS_CIDR:-}" ] && OVERRIDES+=("AdditionalIngressCidr=${ADDITIONAL_INGRESS_CIDR}")
+          [ -n "${KEY_PAIR_NAME:-}" ] && OVERRIDES+=("KeyPairName=${KEY_PAIR_NAME}")
+          [ -n "${AMI_ID:-}" ] && OVERRIDES+=("AmiId=${AMI_ID}")
+
+          aws cloudformation deploy \
+            --stack-name "${STACK_NAME}" \
+            --template-file infrastructure/ec2-ollama-server.yml \
+            --capabilities CAPABILITY_NAMED_IAM \
+            --parameter-overrides "${OVERRIDES[@]}" \
+            --no-fail-on-empty-changeset
+
+          OLLAMA_URL="$(aws cloudformation describe-stacks --stack-name "${STACK_NAME}" \
+            --query "Stacks[0].Outputs[?OutputKey=='OllamaBaseUrl'].OutputValue" --output text)"
+          EIP="$(aws cloudformation describe-stacks --stack-name "${STACK_NAME}" \
+            --query "Stacks[0].Outputs[?OutputKey=='ElasticIpAddress'].OutputValue" --output text)"
+          INSTANCE_ID="$(aws cloudformation describe-stacks --stack-name "${STACK_NAME}" \
+            --query "Stacks[0].Outputs[?OutputKey=='InstanceId'].OutputValue" --output text)"
+
+          echo "OLLAMA_BASE_URL=${OLLAMA_URL}"
+          echo "Elastic IP: ${EIP}"
+          echo "InstanceId: ${INSTANCE_ID}"
+          echo "::notice::Defina a variável GitHub OLLAMA_BASE_URL=${OLLAMA_URL} (backend + origemlab-services)"
+
+      - name: Sync models on running instance (SSM)
+        if: vars.OLLAMA_SERVER_SSM_SYNC_MODELS != 'false'
+        env:
+          STACK_NAME: ${{ vars.OLLAMA_SERVER_STACK_NAME }}
+          OLLAMA_CHAT_MODEL: ${{ vars.OLLAMA_CHAT_MODEL }}
+          OLLAMA_EMBED_MODEL: ${{ vars.OLLAMA_EMBED_MODEL }}
+        run: |
+          set -euo pipefail
+          STACK_NAME="$(bash .github/scripts/normalize-cloudformation-stack-name.sh "${STACK_NAME:?}")"
+          bash .github/scripts/ollama-ssm-sync-models.sh \
+            --stack-name "${STACK_NAME}" \
+            --chat-model "${OLLAMA_CHAT_MODEL:-qwen2.5:7b}" \
+            --embed-model "${OLLAMA_EMBED_MODEL:-mxbai-embed-large:latest}"

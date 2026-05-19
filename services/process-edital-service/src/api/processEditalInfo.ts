@@ -1,10 +1,13 @@
 // Load env from repo/service .env when present.
 import "../load-env";
 
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { createSupabase } from "../lib/supabase";
 import { getMaxContextChars, ollamaEmbed, ollamaGenerate } from "../lib/ollama";
 import { makeEventBase, publishDomainEvent } from "../lib/eventbridge";
+import { mapPool, readConcurrencyEnv } from "../lib/concurrency.js";
 
 type FieldEvidence = {
   /** `topk` = contexto por similaridade de embeddings; `bulk` = amostra/junção de chunks sem score; `window` = varredura por janelas sobre o texto plano. */
@@ -1169,12 +1172,170 @@ function workerIdleMsNoWork(): number {
   return Number.isFinite(n) ? Math.max(0, n) : 120000;
 }
 
-async function runProcessBatch(): Promise<{ hadWork: boolean }> {
+type ProcessOneEditalOutcome =
+  | { status: "ok"; stampOnly?: boolean; partial?: boolean }
+  | { status: "skip_completo" }
+  | { status: "skip_sem_documentos" }
+  | { status: "skip_sem_update_db" }
+  | { status: "fail" };
+
+async function processOneEdital(
+  supabase: SupabaseClient,
+  edital: EditalInfo,
+  fields: FieldKey[],
+  fieldConcurrency: number,
+): Promise<ProcessOneEditalOutcome> {
+  const tag = `[${edital.numero || edital.id.slice(0, 8)}]`;
+  console.log(`\n🧾 ${tag} — ${edital.titulo} (${edital.fonte || "N/A"})`);
+  console.log(`  🆔 edital_id=${edital.id}`);
+
+  let patch: Record<string, any> = {};
+  let evidenceAcc: Record<string, FieldEvidence> = {};
+  let prevEvidence: Record<string, FieldEvidence> = {};
+
+  try {
+    if (!editalNeedsAnyFieldExtraction(edital, fields)) {
+      if (!(edital as any).informacoes_processadas_em) {
+        const { error: stampErr } = await supabase
+          .from("editais")
+          .update({ informacoes_processadas_em: new Date().toISOString() })
+          .eq("id", edital.id);
+        if (stampErr) throw new Error(`Erro ao marcar informacoes_processadas_em: ${stampErr.message}`);
+        console.log(`  ${tag} ℹ️ Campos extraíveis já preenchidos — gravando informacoes_processadas_em.`);
+        await notifyProcessSuccess(edital, { stamp_only: true });
+        return { status: "ok", stampOnly: true };
+      }
+      console.log(`  ${tag} ⏭️ Sem campos pendentes de extração — sem fetch de documents / modelo.`);
+      return { status: "skip_completo" };
+    }
+
+    patch = {};
+    evidenceAcc = {};
+    prevEvidence =
+      edital.informacoes_extracao_evidence &&
+      typeof edital.informacoes_extracao_evidence === "object" &&
+      !Array.isArray(edital.informacoes_extracao_evidence)
+        ? { ...edital.informacoes_extracao_evidence }
+        : {};
+
+    const fileIds = await fetchEditalPdfKeys(supabase, edital.id);
+    const ctxAll = await fetchDocumentsContextByEdital(supabase, edital.id, fileIds);
+    console.log(`  ${tag} 📎 file_ids=${fileIds.length} ctx=${ctxAll.text.length} source=${ctxAll.sourceLabel}`);
+
+    const rows = await fetchDocumentsRows(supabase, { editalId: edital.id, fileIds });
+    const rowsAll = await fetchDocumentsRowsAllWithContent(supabase, { editalId: edital.id, fileIds });
+    const plainLen = buildPlainFullText(rowsAll).length;
+    console.log(
+      `  ${tag} 🔎 chunks_para_top_k=${rows.length} chunks_texto=${rowsAll.length} plain_chars=${plainLen} top_k=${topK()}`,
+    );
+
+    const hasContextSample = hasNonEmptyContextText(ctxAll.text);
+    const hasPlain = plainLen > 0;
+    if (!hasPlain && !hasContextSample && rows.length === 0) {
+      console.log(`  ${tag} ⏭️ pulando: sem texto em documents nem amostra de contexto.`);
+      return { status: "skip_sem_documentos" };
+    }
+
+    const fieldsToRun = fields.filter((f) => fieldNeedsExtraction(f, (edital as any)[f]));
+    const runField = async (f: FieldKey) => {
+      if (!hasPlain && !hasContextSample && rows.length === 0) {
+        console.log(`\n  ${tag} 🧠 campo=${f} — sem texto nem embedding; pulando.`);
+        return null;
+      }
+      const { value, rawJson, modelOutput, evidence } = await extractFieldWithTopKThenWindows(
+        f,
+        edital,
+        rows,
+        rowsAll,
+        rows.length,
+        ctxAll,
+      );
+      const evLabel = evidence ? `evidence=${evidence.source}` : "evidence=nenhuma";
+      console.log(`\n  ${tag} 🧠 campo=${f} ${evLabel}`);
+      console.log(`  ${tag} 🧾 resposta_modelo (raw preview):\n${previewContext(modelOutput, 900)}`);
+      console.log(`  ${tag} 🧾 json_extraido:\n${rawJson || "(vazio)"}`);
+      console.log(
+        `  ${tag} ✅ resultado_${f}: ${value === null ? "null" : typeof value === "string" ? value.slice(0, 180) : JSON.stringify(value).slice(0, 400)}`,
+      );
+      return { f, value, evidence };
+    };
+
+    const fieldOutcomes =
+      fieldConcurrency > 1 && fieldsToRun.length > 1
+        ? await mapPool(fieldsToRun, fieldConcurrency, runField)
+        : await Promise.all(fieldsToRun.map((f) => runField(f)));
+
+    for (const row of fieldOutcomes) {
+      if (!row) continue;
+      patch[row.f] = row.value;
+      if (row.evidence && extractionValueIsUseful(row.f, row.value)) {
+        evidenceAcc[row.f] = row.evidence;
+      }
+    }
+
+    if (Object.keys(evidenceAcc).length > 0) {
+      patch.informacoes_extracao_evidence = { ...prevEvidence, ...evidenceAcc };
+    }
+
+    if (Object.keys(patch).length === 0) {
+      const aindaPendente = fields.some((f) => fieldNeedsExtraction(f, (edital as any)[f]));
+      console.log(
+        `  ${tag} ⏭️ pulando update: ${
+          aindaPendente
+            ? "há campos nulos, mas sem contexto/embedding por campo"
+            : "nenhum campo processável"
+        }`,
+      );
+      return { status: "skip_sem_update_db" };
+    }
+
+    await updateEditalInfo(supabase, edital.id, patch);
+    const camposSalvos = Object.keys(patch).filter((k) => k !== "informacoes_extracao_evidence");
+    await notifyProcessSuccess(edital, { campos: camposSalvos });
+    console.log(`  ${tag} ✅ atualizado`);
+    return { status: "ok" };
+  } catch (e) {
+    if (Object.keys(evidenceAcc).length > 0) {
+      patch.informacoes_extracao_evidence = { ...prevEvidence, ...evidenceAcc };
+    }
+    const fieldKeys = Object.keys(patch).filter((k) => k !== "informacoes_extracao_evidence");
+    if (fieldKeys.length > 0) {
+      try {
+        await updateEditalInfo(supabase, edital.id, patch);
+        console.warn(
+          `  ${tag} ⚠️ Gravação parcial (${fieldKeys.join(", ")}) — erro posterior: ${e instanceof Error ? e.message : String(e)}`,
+        );
+        await notifyProcessSuccess(edital, { campos: fieldKeys, parcial: true });
+        return { status: "ok", partial: true };
+      } catch (persistErr) {
+        console.error(
+          `  ${tag} ❌ erro:`,
+          e instanceof Error ? e.message : String(e),
+          "| gravar parcial falhou:",
+          persistErr instanceof Error ? persistErr.message : String(persistErr),
+        );
+        await notifyProcessFailure(edital, e, { gravacaoParcialFallhou: persistErr, campos: fieldKeys });
+        return { status: "fail" };
+      }
+    }
+    console.error(`  ${tag} ❌ erro:`, e instanceof Error ? e.message : String(e));
+    await notifyProcessFailure(edital, e);
+    return { status: "fail" };
+  }
+}
+
+export async function runProcessBatch(): Promise<{ hadWork: boolean }> {
   const supabase = createSupabase();
 
   const limitRaw = parseInt(process.env.PROCESS_EDITAL_LIMIT || "0", 10);
   const limit = Number.isFinite(limitRaw) && limitRaw > 0 ? limitRaw : Infinity;
-  const delayBetweenEditaisMs = Math.max(0, parseInt(process.env.DELAY_BETWEEN_EDITAIS_MS || "2000", 10) || 2000);
+  const editalConcurrency = readConcurrencyEnv("PROCESS_EDITAL_CONCURRENCY", 2, 6);
+  const fieldConcurrency = readConcurrencyEnv("PROCESS_EDITAL_FIELD_CONCURRENCY", 2, 4);
+  const delayDefault = editalConcurrency > 1 ? "0" : "2000";
+  const delayBetweenEditaisMs = Math.max(
+    0,
+    parseInt(process.env.DELAY_BETWEEN_EDITAIS_MS || delayDefault, 10) || 0,
+  );
   const onlyId = String(process.env.PROCESS_EDITAL_ONLY_ID || "").trim();
 
   const fields: FieldKey[] = [
@@ -1191,7 +1352,7 @@ async function runProcessBatch(): Promise<{ hadWork: boolean }> {
 
   console.log("🧠 process-edital-service (Ollama-only)");
   console.log(
-    `📦 limit=${Number.isFinite(limit) ? limit : "∞"} delayBetweenEditaisMs=${delayBetweenEditaisMs} order=${String(process.env.PROCESS_EDITAL_ORDER || "pending_first").trim() || "pending_first"}`,
+    `📦 limit=${Number.isFinite(limit) ? limit : "∞"} editalConcurrency=${editalConcurrency} fieldConcurrency=${fieldConcurrency} delayBetweenEditaisMs=${delayBetweenEditaisMs} order=${String(process.env.PROCESS_EDITAL_ORDER || "pending_first").trim() || "pending_first"}`,
   );
   if (onlyId) console.log(`🎯 PROCESS_EDITAL_ONLY_ID=${onlyId}`);
 
@@ -1221,138 +1382,45 @@ async function runProcessBatch(): Promise<{ hadWork: boolean }> {
   let skipSemDocumentos = 0;
   let skipSemUpdateDb = 0;
 
-  for (let i = 0; i < targets.length; i++) {
-    const edital = targets[i]!;
-    console.log(`\n🧾 ${edital.numero || "N/A"} — ${edital.titulo} (${edital.fonte || "N/A"})`);
-    console.log(`  🆔 edital_id=${edital.id}`);
-    /** Acumula campos extraídos; usado também no catch para gravar progresso quando há timeout antes do fim do loop. */
-    let patch: Record<string, any> = {};
-    let evidenceAcc: Record<string, FieldEvidence> = {};
-    let prevEvidence: Record<string, FieldEvidence> = {};
-    try {
-      if (!editalNeedsAnyFieldExtraction(edital, fields)) {
-        if (!(edital as any).informacoes_processadas_em) {
-          const { error: stampErr } = await supabase
-            .from("editais")
-            .update({ informacoes_processadas_em: new Date().toISOString() })
-            .eq("id", edital.id);
-          if (stampErr) throw new Error(`Erro ao marcar informacoes_processadas_em: ${stampErr.message}`);
-          console.log("  ℹ️ Campos extraíveis já preenchidos — gravando informacoes_processadas_em.");
-          ok++;
-          await notifyProcessSuccess(edital, { stamp_only: true });
-        } else {
-          skipCompleto++;
-          console.log("  ⏭️ Sem campos pendentes de extração — sem fetch de documents / modelo.");
-        }
-        continue;
-      }
-
-      patch = {};
-      evidenceAcc = {};
-      prevEvidence =
-        edital.informacoes_extracao_evidence && typeof edital.informacoes_extracao_evidence === "object" && !Array.isArray(edital.informacoes_extracao_evidence)
-          ? { ...edital.informacoes_extracao_evidence }
-          : {};
-
-      const fileIds = await fetchEditalPdfKeys(supabase, edital.id);
-      const ctxAll = await fetchDocumentsContextByEdital(supabase, edital.id, fileIds);
-      console.log(`  📎 file_ids=${fileIds.length} ctx=${ctxAll.text.length} source=${ctxAll.sourceLabel}`);
-
-      // Chunks com embedding (top-k) e todos os chunks com texto (janelas).
-      const rows = await fetchDocumentsRows(supabase, { editalId: edital.id, fileIds });
-      const rowsAll = await fetchDocumentsRowsAllWithContent(supabase, { editalId: edital.id, fileIds });
-      const plainLen = buildPlainFullText(rowsAll).length;
-      console.log(`  🔎 chunks_para_top_k=${rows.length} chunks_texto=${rowsAll.length} plain_chars=${plainLen} top_k=${topK()}`);
-
-      const hasContextSample = hasNonEmptyContextText(ctxAll.text);
-      const hasPlain = plainLen > 0;
-      if (!hasPlain && !hasContextSample && rows.length === 0) {
+  const processTargets = async (edital: EditalInfo) => {
+    const outcome = await processOneEdital(supabase, edital, fields, fieldConcurrency);
+    switch (outcome.status) {
+      case "ok":
+        ok++;
+        break;
+      case "skip_completo":
+        skipCompleto++;
+        break;
+      case "skip_sem_documentos":
         skipSemDocumentos++;
-        console.log("  ⏭️ pulando: sem texto em `documents` nem amostra de contexto para este edital.");
-        continue;
-      }
-
-      for (const f of fields) {
-        const before = (edital as any)[f];
-        if (!fieldNeedsExtraction(f, before)) continue;
-
-        if (!hasPlain && !hasContextSample && rows.length === 0) {
-          console.log(`\n  🧠 campo=${f} — sem texto nem embedding; pulando.`);
-          continue;
-        }
-
-        const { value, rawJson, modelOutput, evidence } = await extractFieldWithTopKThenWindows(
-          f,
-          edital,
-          rows,
-          rowsAll,
-          rows.length,
-          ctxAll,
-        );
-
-        patch[f] = value;
-        if (evidence && extractionValueIsUseful(f, value)) evidenceAcc[f] = evidence;
-
-        const evLabel = evidence ? `evidence=${evidence.source}` : "evidence=nenhuma";
-        console.log(`\n  🧠 campo=${f} ${evLabel}`);
-        console.log(`  🧾 resposta_modelo (raw preview):\n${previewContext(modelOutput, 900)}`);
-        console.log(`  🧾 json_extraido:\n${rawJson || "(vazio)"}`);
-        console.log(
-          `  ✅ resultado_${f}: ${value === null ? "null" : typeof value === "string" ? value.slice(0, 180) : JSON.stringify(value).slice(0, 400)}`,
-        );
-      }
-
-      if (Object.keys(evidenceAcc).length > 0) {
-        patch.informacoes_extracao_evidence = { ...prevEvidence, ...evidenceAcc };
-      }
-
-      if (Object.keys(patch).length === 0) {
+        break;
+      case "skip_sem_update_db":
         skipSemUpdateDb++;
-        const aindaPendente = fields.some((f) => fieldNeedsExtraction(f, (edital as any)[f]));
-        console.log(
-          aindaPendente
-            ? "  ⏭️ pulando update: há campos nulos, mas nenhum contexto/embedding por campo — edital continua na fila até haver `documents` ou embeddings."
-            : "  ⏭️ pulando update: nenhum campo processável.",
-        );
-        continue;
-      }
-
-      await updateEditalInfo(supabase, edital.id, patch);
-      ok++;
-      const camposSalvos = Object.keys(patch).filter((k) => k !== "informacoes_extracao_evidence");
-      await notifyProcessSuccess(edital, { campos: camposSalvos });
-      console.log("  ✅ atualizado");
-    } catch (e) {
-      if (Object.keys(evidenceAcc).length > 0) {
-        patch.informacoes_extracao_evidence = { ...prevEvidence, ...evidenceAcc };
-      }
-      const fieldKeys = Object.keys(patch).filter((k) => k !== "informacoes_extracao_evidence");
-      if (fieldKeys.length > 0) {
-        try {
-          await updateEditalInfo(supabase, edital.id, patch);
-          ok++;
-          console.warn(
-            `  ⚠️ Gravação parcial (${fieldKeys.join(", ")}) — erro posterior: ${e instanceof Error ? e.message : String(e)}`,
-          );
-          await notifyProcessSuccess(edital, { campos: fieldKeys, parcial: true });
-        } catch (persistErr) {
-          fail++;
-          console.error(
-            "  ❌ erro:",
-            e instanceof Error ? e.message : String(e),
-            "| gravar parcial falhou:",
-            persistErr instanceof Error ? persistErr.message : String(persistErr),
-          );
-          await notifyProcessFailure(edital, e, { gravacaoParcialFallhou: persistErr, campos: fieldKeys });
-        }
-      } else {
+        break;
+      case "fail":
         fail++;
-        console.error("  ❌ erro:", e instanceof Error ? e.message : String(e));
-        await notifyProcessFailure(edital, e);
+        break;
+      default:
+        break;
+    }
+  };
+
+  if (editalConcurrency > 1 && targets.length > 1) {
+    const batchDelay = delayBetweenEditaisMs;
+    const chunkSize = editalConcurrency;
+    for (let start = 0; start < targets.length; start += chunkSize) {
+      const chunk = targets.slice(start, start + chunkSize);
+      await Promise.all(chunk.map((edital) => processTargets(edital)));
+      if (batchDelay > 0 && start + chunkSize < targets.length) {
+        await new Promise((r) => setTimeout(r, batchDelay));
       }
     }
-    if (i < targets.length - 1 && delayBetweenEditaisMs > 0) {
-      await new Promise((r) => setTimeout(r, delayBetweenEditaisMs));
+  } else {
+    for (let i = 0; i < targets.length; i++) {
+      await processTargets(targets[i]!);
+      if (i < targets.length - 1 && delayBetweenEditaisMs > 0) {
+        await new Promise((r) => setTimeout(r, delayBetweenEditaisMs));
+      }
     }
   }
 
@@ -1391,8 +1459,14 @@ async function main() {
   await runProcessBatch();
 }
 
-main().catch((e) => {
-  console.error("❌ fatal:", e);
-  process.exitCode = 1;
-});
+const isDirectCliRun =
+  typeof process.argv[1] === "string" &&
+  path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+
+if (isDirectCliRun) {
+  main().catch((e) => {
+    console.error("❌ fatal:", e);
+    process.exitCode = 1;
+  });
+}
 

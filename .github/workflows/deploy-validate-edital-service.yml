@@ -128,7 +128,7 @@ jobs:
 
           SCHED="${SCHEDULE_EXPRESSION:-rate(6 hours)}"
           CLUSTER="${CLUSTER_NAME:-origemlab-validate-edital}"
-          ORCH="${ECS_ORCHESTRATION_MODE:-continuous}"
+          ORCH="${ECS_ORCHESTRATION_MODE:-scheduled}"
 
           OVERRIDES=(
             "ServiceImage=${IMAGE_URI}"
@@ -146,7 +146,7 @@ jobs:
           _val_ollama="$(printf '%s' "${VALIDATE_EDITAL_OLLAMA_MODEL:-}" | tr -d '\r' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
           _shared_ollama="$(printf '%s' "${OLLAMA_MODEL:-}" | tr -d '\r' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
           _ollama_effective="${_val_ollama:-${_shared_ollama}}"
-          _ollama_effective="${_ollama_effective:-qwen2.5:14b}"
+          _ollama_effective="${_ollama_effective:-qwen2.5:7b}"
           OVERRIDES+=("OllamaModel=${_ollama_effective}")
           echo "CloudFormation parameter OllamaModel=${_ollama_effective} (VALIDATE_EDITAL_OLLAMA_MODEL > OLLAMA_MODEL > default)"
 
@@ -170,6 +170,12 @@ jobs:
           fi
           if [ -n "${DELAY_BETWEEN_EDITAIS_MS:-}" ]; then
             OVERRIDES+=("DelayBetweenEditaisMs=${DELAY_BETWEEN_EDITAIS_MS}")
+          fi
+          if [ -n "${VALIDATE_EDITAL_CONCURRENCY:-}" ]; then
+            OVERRIDES+=("ValidateEditalConcurrency=${VALIDATE_EDITAL_CONCURRENCY}")
+          fi
+          if [ -n "${VALIDATE_FIELD_CONCURRENCY:-}" ]; then
+            OVERRIDES+=("ValidateFieldConcurrency=${VALIDATE_FIELD_CONCURRENCY}")
           fi
           if [ -n "${VALIDATE_FORCE_REVALIDATE:-}" ]; then
             OVERRIDES+=("ValidateForceRevalidate=${VALIDATE_FORCE_REVALIDATE}")
@@ -205,4 +211,3 @@ jobs:
           echo "Stack ${STACK_NAME} updated; ServiceImage=${IMAGE_URI}"
 
           bash .github/scripts/ecs-force-rollout-after-cfn.sh "${STACK_NAME}" "${ORCH}"
-

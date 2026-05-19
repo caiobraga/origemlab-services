@@ -16,6 +16,8 @@ Replica o fluxo do script **`api:process-edital-info`**: percorre editais no Sup
 - **Gravação parcial:** Se o erro (ex. timeout) ocorrer **a meio** do loop de campos, o serviço tenta **`update`** com os campos **já** extraídos (`⚠️ Gravação parcial` no log), para não perder trabalho antes de um `✅ atualizado`.
 - Ordenação por volume de chunks: RPC `process_edital_editais_com_document_chunks` — aplicar `sql/20260513_process_edital_editais_com_document_chunks.sql` ou `PROCESS_EDITAL_SKIP_CHUNK_ORDER_RPC=1` para desligar temporariamente.
 
+**Paralelismo (por task ECS):** `PROCESS_EDITAL_CONCURRENCY` (editais em paralelo, default **2**) e `PROCESS_EDITAL_FIELD_CONCURRENCY` (campos por edital, default **2**). Com concorrência > 1, `DELAY_BETWEEN_EDITAIS_MS` default **0**. Ajuste conforme capacidade do Ollama (2×2 ≈ até 4 generates + embeds simultâneos por edital × N editais).
+
 Mais opções: bloco **process-edital-service** em [`.env.example`](../../.env.example).
 
 ## Correr localmente
@@ -32,4 +34,4 @@ O entrypoint é `src/api/processEditalInfo.ts` (carrega `../load-env` → `.env`
 
 `deploy-process-edital-service.yml` → ECR `origemlab-process-edital-service` + `infrastructure/ecs-process-edital-service.yml`. Variáveis e modo **continuous** vs **scheduled**: [README do repositório](../../README.md).
 
-**Modelo Ollama no ECS:** o workflow envia sempre o parâmetro `OllamaModel` ao CloudFormation. Ordem: variável **`PROCESS_EDITAL_OLLAMA_MODEL`** (só este serviço) → senão **`OLLAMA_MODEL`** → senão default do template (`qwen2.5:14b`). Se definiste só `PROCESS_EDITAL_OLLAMA_MODEL` no GitHub, antes o deploy ignorava e deixava o default; garante também `ollama pull` do modelo no host.
+**Modelo Ollama no ECS:** o workflow envia sempre o parâmetro `OllamaModel` ao CloudFormation. Ordem: variável **`PROCESS_EDITAL_OLLAMA_MODEL`** (só este serviço) → senão **`OLLAMA_MODEL`** → senão default do template (`qwen2.5:7b`). Se definiste só `PROCESS_EDITAL_OLLAMA_MODEL` no GitHub, antes o deploy ignorava e deixava o default; garante também `ollama pull` do modelo no host.

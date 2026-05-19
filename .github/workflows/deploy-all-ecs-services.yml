@@ -13,18 +13,19 @@ permissions:
   contents: read
 
 jobs:
-  scraper-runner:
-    uses: ./.github/workflows/deploy-scraper-runner.yml
+  ingestion-pipeline-service:
+    uses: ./.github/workflows/deploy-ingestion-pipeline-service.yml
     secrets: inherit
 
-  document-processor:
-    uses: ./.github/workflows/deploy-document-processor.yml
+  edital-pipeline-service:
+    uses: ./.github/workflows/deploy-edital-pipeline-service.yml
     secrets: inherit
 
-  process-edital-service:
-    uses: ./.github/workflows/deploy-process-edital-service.yml
-    secrets: inherit
-
-  validate-edital-service:
-    uses: ./.github/workflows/deploy-validate-edital-service.yml
-    secrets: inherit
+  # Legado (deploy manual): deploy-scraper-runner.yml, deploy-document-processor.yml,
+  # deploy-process-edital-service.yml, deploy-validate-edital-service.yml
+  # process-edital-service:
+  #   uses: ./.github/workflows/deploy-process-edital-service.yml
+  #   secrets: inherit
+  # validate-edital-service:
+  #   uses: ./.github/workflows/deploy-validate-edital-service.yml
+  #   secrets: inherit

@@ -1,0 +1,138 @@
+# ECS deploy: ingestion-pipeline (scraper-runner + document-processor num único container).
+name: deploy-ingestion-pipeline-service
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "services/ingestion-pipeline-service/**"
+      - "services/scraper-runner/**"
+      - "services/document-processor/**"
+      - "infrastructure/ecs-ingestion-pipeline-service.yml"
+      - ".github/workflows/deploy-ingestion-pipeline-service.yml"
+  workflow_dispatch: {}
+  workflow_call: {}
+
+permissions:
+  id-token: write
+  contents: read
+
+concurrency:
+  group: ingestion-pipeline-service-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  AWS_REGION: ${{ vars.AWS_REGION }}
+
+jobs:
+  docker-ecr-and-stack:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: ${{ env.AWS_REGION }}
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+
+      - name: Verify ECR repository
+        run: |
+          set -euo pipefail
+          REPO="origemlab-ingestion-pipeline-service"
+          if ! aws ecr describe-repositories --repository-names "${REPO}" --region "${AWS_REGION}" >/dev/null; then
+            echo "ECR repository ${REPO} not found. Run infrastructure/ecr-repositories.yml or create ${REPO}."
+            exit 1
+          fi
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and push image
+        env:
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          REGISTRY="${{ steps.login-ecr.outputs.registry }}"
+          IMAGE="${REGISTRY}/origemlab-ingestion-pipeline-service"
+          docker build -f services/ingestion-pipeline-service/Dockerfile -t "${IMAGE}:${IMAGE_TAG}" -t "${IMAGE}:latest" .
+          docker push "${IMAGE}:${IMAGE_TAG}"
+          docker push "${IMAGE}:latest"
+          echo "IMAGE_URI=${IMAGE}:${IMAGE_TAG}" >> "$GITHUB_ENV"
+
+      - name: Deploy ECS stack (CloudFormation)
+        env:
+          STACK_NAME: ${{ vars.INGESTION_PIPELINE_STACK_NAME }}
+          VPC_ID: ${{ vars.VPC_ID }}
+          SUBNET_IDS: ${{ vars.SUBNET_IDS }}
+          SECURITY_GROUP_IDS: ${{ vars.SECURITY_GROUP_IDS }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          OLLAMA_BASE_URL: ${{ vars.OLLAMA_BASE_URL }}
+          SCHEDULE_EXPRESSION: ${{ vars.INGESTION_PIPELINE_SCHEDULE_EXPRESSION }}
+          CLUSTER_NAME: ${{ vars.INGESTION_PIPELINE_CLUSTER_NAME }}
+          EVENT_BUS_NAME: ${{ vars.EVENT_BUS_NAME }}
+          OLLAMA_CHAT_MODEL: ${{ vars.OLLAMA_CHAT_MODEL }}
+          OLLAMA_EMBED_MODEL: ${{ vars.OLLAMA_EMBED_MODEL }}
+          ECS_ORCHESTRATION_MODE: ${{ vars.ECS_ORCHESTRATION_MODE }}
+          WORKER_IDLE_MS_AFTER_WORK: ${{ vars.WORKER_IDLE_MS_AFTER_WORK }}
+          WORKER_IDLE_MS_NO_WORK: ${{ vars.WORKER_IDLE_MS_NO_WORK }}
+          NODE_DNS_IPV4FIRST: ${{ vars.NODE_DNS_IPV4FIRST }}
+          SCRAPER_FETCH_RETRIES: ${{ vars.SCRAPER_FETCH_RETRIES }}
+          SCRAPER_FETCH_CONNECT_TIMEOUT_MS: ${{ vars.SCRAPER_FETCH_CONNECT_TIMEOUT_MS }}
+          SCRAPER_FETCH_HEADERS_TIMEOUT_MS: ${{ vars.SCRAPER_FETCH_HEADERS_TIMEOUT_MS }}
+          SCRAPER_FETCH_BODY_TIMEOUT_MS: ${{ vars.SCRAPER_FETCH_BODY_TIMEOUT_MS }}
+          SCRAPER_SOURCE_TIMEOUT_MS: ${{ vars.SCRAPER_SOURCE_TIMEOUT_MS }}
+        run: |
+          set -euo pipefail
+          : "${STACK_NAME:?Set repo variable INGESTION_PIPELINE_STACK_NAME}"
+          STACK_NAME="$(bash .github/scripts/normalize-cloudformation-stack-name.sh "${STACK_NAME}")"
+          : "${VPC_ID:?Set repo variable VPC_ID}"
+          : "${SUBNET_IDS:?Set repo variable SUBNET_IDS}"
+          : "${SECURITY_GROUP_IDS:?Set repo variable SECURITY_GROUP_IDS}"
+          : "${SUPABASE_URL:?Set repo secret SUPABASE_URL}"
+          : "${SUPABASE_SERVICE_ROLE_KEY:?Set repo secret SUPABASE_SERVICE_ROLE_KEY}"
+          : "${IMAGE_URI:?IMAGE_URI missing}"
+
+          escape_cf_list() { printf '%s' "$1" | sed 's/,/\\,/g'; }
+          SUBNET_IDS_CF=$(escape_cf_list "${SUBNET_IDS}")
+          SG_IDS_CF=$(escape_cf_list "${SECURITY_GROUP_IDS}")
+
+          SCHED="${SCHEDULE_EXPRESSION:-rate(1 hour)}"
+          CLUSTER="${CLUSTER_NAME:-origemlab-ingestion-pipeline}"
+          ORCH="${ECS_ORCHESTRATION_MODE:-scheduled}"
+          EB="${EVENT_BUS_NAME:-default}"
+
+          OVERRIDES=(
+            "ServiceImage=${IMAGE_URI}"
+            "VpcId=${VPC_ID}"
+            "SubnetIds=${SUBNET_IDS_CF}"
+            "SecurityGroupIds=${SG_IDS_CF}"
+            "SupabaseUrl=${SUPABASE_URL}"
+            "SupabaseServiceRoleKey=${SUPABASE_SERVICE_ROLE_KEY}"
+            "ScheduleExpression=${SCHED}"
+            "ClusterName=${CLUSTER}"
+            "OrchestrationMode=${ORCH}"
+            "EventBusName=${EB}"
+          )
+
+          [ -n "${OLLAMA_BASE_URL:-}" ] && OVERRIDES+=("OllamaBaseUrl=${OLLAMA_BASE_URL}")
+          [ -n "${OLLAMA_CHAT_MODEL:-}" ] && OVERRIDES+=("OllamaChatModel=${OLLAMA_CHAT_MODEL}")
+          [ -n "${OLLAMA_EMBED_MODEL:-}" ] && OVERRIDES+=("OllamaEmbedModel=${OLLAMA_EMBED_MODEL}")
+          [ -n "${NODE_DNS_IPV4FIRST:-}" ] && OVERRIDES+=("NodeDnsIpv4First=${NODE_DNS_IPV4FIRST}")
+          [ -n "${SCRAPER_FETCH_RETRIES:-}" ] && OVERRIDES+=("ScraperFetchRetries=${SCRAPER_FETCH_RETRIES}")
+          [ -n "${SCRAPER_FETCH_CONNECT_TIMEOUT_MS:-}" ] && OVERRIDES+=("ScraperFetchConnectTimeoutMs=${SCRAPER_FETCH_CONNECT_TIMEOUT_MS}")
+          [ -n "${SCRAPER_FETCH_HEADERS_TIMEOUT_MS:-}" ] && OVERRIDES+=("ScraperFetchHeadersTimeoutMs=${SCRAPER_FETCH_HEADERS_TIMEOUT_MS}")
+          [ -n "${SCRAPER_FETCH_BODY_TIMEOUT_MS:-}" ] && OVERRIDES+=("ScraperFetchBodyTimeoutMs=${SCRAPER_FETCH_BODY_TIMEOUT_MS}")
+          [ -n "${SCRAPER_SOURCE_TIMEOUT_MS:-}" ] && OVERRIDES+=("ScraperSourceTimeoutMs=${SCRAPER_SOURCE_TIMEOUT_MS}")
+          [ -n "${WORKER_IDLE_MS_AFTER_WORK:-}" ] && OVERRIDES+=("WorkerIdleMsAfterWork=${WORKER_IDLE_MS_AFTER_WORK}")
+          [ -n "${WORKER_IDLE_MS_NO_WORK:-}" ] && OVERRIDES+=("WorkerIdleMsNoWork=${WORKER_IDLE_MS_NO_WORK}")
+
+          aws cloudformation deploy \
+            --template-file infrastructure/ecs-ingestion-pipeline-service.yml \
+            --stack-name "${STACK_NAME}" \
+            --capabilities CAPABILITY_IAM \
+            --no-fail-on-empty-changeset \
+            --parameter-overrides "${OVERRIDES[@]}"
+
+          bash .github/scripts/ecs-force-rollout-after-cfn.sh "${STACK_NAME}" "${ORCH}"

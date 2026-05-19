@@ -1,6 +1,13 @@
 import * as cheerio from "cheerio";
 import { fetchWithScraperAgent } from "./fetchAgent.mjs";
 import { filterEditaisCurrentYear } from "./yearFilter.mjs";
+import {
+  extractNumeroFromLinkText,
+  extractParentEditalNumero,
+  isSupplementTitle,
+  normalizeSpaces,
+  pickPreferredTitulo,
+} from "./scraperTitleUtils.mjs";
 
 const BASE = "https://fapac.ac.gov.br";
 const LIST_URL = `${BASE}/98-2/`;
@@ -21,13 +28,10 @@ function isPdfLink(href) {
   return (h.includes("wp-content/uploads") || h.includes(".pdf")) && h.includes(".pdf");
 }
 
-function extractNumero(titulo) {
-  const m = String(titulo || "").match(/N[º°]?\s*(\d+\/\d+)|(\d{3})\/(\d{4})/i);
-  if (m && m[1]) return m[1];
-  if (m && m[2]) return `${m[2]}/${m[3]}`;
-  const m2 = String(titulo || "").match(/(\d{1,4})\/(\d{4})/);
-  if (m2) return `${m2[1]}/${m2[2]}`;
-  return "";
+function blockContextForAnchor($, el) {
+  const $el = $(el);
+  const block = $el.closest("li, tr, article, section, .entry, .post, td, p");
+  return normalizeSpaces(block.text()).slice(0, 2500);
 }
 
 async function fetchText(url, timeoutMs = 90000) {
@@ -62,26 +66,50 @@ function extractEditaisFromHtml(html) {
     const abs = absoluteUrl(href);
     if (!abs) return;
     const text = $(el).text().trim().replace(/\s+/g, " ");
-    pdfLinks.push({ href: abs, text });
+    pdfLinks.push({ href: abs, text, blockContext: blockContextForAnchor($, el) });
   });
 
   const byNumero = new Map();
+  const orphanSupplements = [];
+
   for (const l of pdfLinks) {
-    const numero = extractNumero(l.text);
-    if (!numero) continue;
+    const text = normalizeSpaces(l.text);
+    const numero = extractNumeroFromLinkText(text, { blockContext: l.blockContext });
+    const supplement = isSupplementTitle(text);
+
+    if (!numero) {
+      if (supplement) orphanSupplements.push(l);
+      continue;
+    }
+
     const existing = byNumero.get(numero);
     if (existing) {
       if (!existing.pdfUrls.includes(l.href)) existing.pdfUrls.push(l.href);
+      if (!supplement) existing.titulo = pickPreferredTitulo(existing.titulo, text);
     } else {
-      byNumero.set(numero, { titulo: l.text || `Edital ${numero}`, pdfUrls: [l.href] });
+      const titulo = supplement ? `Edital ${numero}` : text || `Edital ${numero}`;
+      byNumero.set(numero, { titulo: pickPreferredTitulo("", titulo), pdfUrls: [l.href] });
+    }
+  }
+
+  for (const l of orphanSupplements) {
+    const parent = extractParentEditalNumero(l.blockContext || "");
+    if (!parent) continue;
+    const existing = byNumero.get(parent);
+    if (existing) {
+      if (!existing.pdfUrls.includes(l.href)) existing.pdfUrls.push(l.href);
+    } else {
+      byNumero.set(parent, { titulo: `Edital ${parent}`, pdfUrls: [l.href] });
     }
   }
 
   const editais = [];
   for (const [numero, v] of byNumero.entries()) {
+    let titulo = String(v.titulo || `Edital ${numero}`).slice(0, 400);
+    if (isSupplementTitle(titulo)) titulo = `Edital ${numero}`;
     editais.push({
       numero,
-      titulo: String(v.titulo || `Edital ${numero}`).slice(0, 400),
+      titulo,
       fonte: "fapac",
       orgao: "FAPAC",
       link: LIST_URL,

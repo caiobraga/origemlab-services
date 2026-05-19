@@ -8,6 +8,8 @@
  *      CHUNK_SIZE, CHUNK_OVERLAP, ENRICH_CHUNKS=1|0, CHUNK_ENRICH_DELAY_MS, DISABLE_EVENTBRIDGE,
  *      DOCUMENT_PROCESSOR_EMBED_PERGUNTAS=1|0 (segunda coluna de embedding; default 1)
  */
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { loadEnv } from "./loadEnv.mjs";
 import { enrichChunkForRetrieval, enrichDelayMs, retrievalEmbeddingInputFromChunkContent } from "./enrichChunk.mjs";
 import { embedWithOllamaBatched } from "./embed.mjs";
@@ -331,7 +333,7 @@ function workerIdleMsNoWork() {
  * Um ciclo de fila (pendentes + opcional --all/--rebuild via argv).
  * @returns {{ queueLength: number }}
  */
-async function runDocumentProcessor(cliArgs = process.argv.slice(2)) {
+export async function runDocumentProcessor(cliArgs = process.argv.slice(2)) {
   const { dryRun, processAll, rebuild, limit, backfillEmbeddingPerguntas: runBackfillEmbeddingPerguntas } =
     parseArgs(cliArgs);
   const startedAt = Date.now();
@@ -744,7 +746,13 @@ async function main() {
   await runDocumentProcessor(argv);
 }
 
-main().catch((e) => {
-  console.error(e);
-  process.exit(1);
-});
+const isDirectCliRun =
+  typeof process.argv[1] === "string" &&
+  path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+
+if (isDirectCliRun) {
+  main().catch((e) => {
+    console.error(e);
+    process.exit(1);
+  });
+}

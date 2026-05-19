@@ -1,0 +1,14 @@
+{
+  "name": "@origemlab/ingestion-pipeline-service",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node src/runIngestionPipeline.mjs"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "dotenv": "^16.6.1"
+  }
+}

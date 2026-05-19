@@ -38,13 +38,13 @@ Parameters:
     Default: ""
   OllamaChatModel:
     Type: String
-    Default: "qwen2.5:14b"
+    Default: "qwen2.5:7b"
   OllamaEmbedModel:
     Type: String
     Default: "mxbai-embed-large:latest"
   OrchestrationMode:
     Type: String
-    Default: continuous
+    Default: scheduled
     AllowedValues:
       - continuous
       - scheduled

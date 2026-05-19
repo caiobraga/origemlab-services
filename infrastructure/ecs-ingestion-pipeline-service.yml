@@ -1,5 +1,7 @@
 AWSTemplateFormatVersion: "2010-09-09"
-Description: origemlab process-edital-info on ECS Fargate (extract fields via Ollama → update editais)
+Description: >
+  origemlab ingestion-pipeline — scraper-runner + document-processor num único container.
+  Default scheduled (sem worker 24/7 do document-processor).
 
 Parameters:
   ProjectName:
@@ -8,17 +10,15 @@ Parameters:
   EventBusName:
     Type: String
     Default: default
-    Description: "EventBridge bus para DomainEvent (notificações Telegram / error-reporter)"
   ClusterName:
     Type: String
-    Default: origemlab-process-edital
+    Default: origemlab-ingestion-pipeline
   ServiceImage:
     Type: String
-    Description: "ECR image URI for process-edital-service"
+    Description: "ECR image URI for ingestion-pipeline-service"
   ScheduleExpression:
     Type: String
-    Default: "rate(30 minutes)"
-    Description: "EventBridge Scheduler expression"
+    Default: "rate(1 hour)"
   VpcId:
     Type: AWS::EC2::VPC::Id
   SubnetIds:
@@ -28,65 +28,51 @@ Parameters:
   SupabaseUrl:
     Type: String
     NoEcho: true
-    Description: "Supabase project URL (injected at deploy from GitHub Actions secrets)"
   SupabaseServiceRoleKey:
     Type: String
     NoEcho: true
-    Description: "Supabase service role key (injected at deploy from GitHub Actions secrets)"
   OllamaBaseUrl:
     Type: String
-    Description: "Base URL do Ollama (ex.: http://host:11434)"
-  OllamaModel:
+    Default: ""
+  OllamaChatModel:
     Type: String
     Default: "qwen2.5:7b"
-  OllamaTimeoutMs:
-    Type: Number
-    Default: 600000
-    Description: "Timeout ms base (embed e generate se os específicos não forem passados)"
-  OllamaGenerateTimeoutMs:
-    Type: Number
-    Default: 900000
-    Description: "Timeout ms só para /api/generate (qwen14b + janelas grandes). 900000=15min"
-  OllamaEmbedTimeoutMs:
-    Type: Number
-    Default: 180000
-    Description: "Timeout ms só para /api/embed"
-  OllamaMaxContextChars:
-    Type: Number
-    Default: 22000
-  ProcessEditalLimit:
-    Type: Number
-    Default: 0
-    Description: "0 = sem limite; >0 limita quantos editais por execução"
-  DelayBetweenEditaisMs:
-    Type: Number
-    Default: 0
-    Description: "Pausa entre lotes de editais (ms). Com PROCESS_EDITAL_CONCURRENCY>1 o default no código é 0."
-  ProcessEditalConcurrency:
-    Type: Number
-    Default: 2
-    Description: "Editais processados em paralelo por task (máx. recomendado 2–4 conforme Ollama)"
-  ProcessEditalFieldConcurrency:
-    Type: Number
-    Default: 2
-    Description: "Campos extraídos em paralelo por edital (máx. recomendado 2–4)"
+  OllamaEmbedModel:
+    Type: String
+    Default: "mxbai-embed-large:latest"
+  NodeDnsIpv4First:
+    Type: String
+    Default: "1"
+  ScraperFetchRetries:
+    Type: String
+    Default: "4"
+  ScraperFetchConnectTimeoutMs:
+    Type: String
+    Default: "60000"
+  ScraperFetchHeadersTimeoutMs:
+    Type: String
+    Default: "120000"
+  ScraperFetchBodyTimeoutMs:
+    Type: String
+    Default: "120000"
+  ScraperSourceTimeoutMs:
+    Type: String
+    Default: "300000"
   OrchestrationMode:
     Type: String
     Default: scheduled
     AllowedValues:
       - continuous
       - scheduled
-    Description: "continuous = 1x ECS Service com loop no container; scheduled = só EventBridge Scheduler"
   WorkerIdleMsAfterWork:
     Type: Number
     Default: 8000
-    Description: "Pausa (ms) entre lotes quando há editais na fila (modo continuous)"
   WorkerIdleMsNoWork:
     Type: Number
     Default: 120000
-    Description: "Pausa (ms) quando a fila veio vazia (modo continuous)"
 
 Conditions:
+  HasOllamaUrl: !Not [!Equals [!Ref OllamaBaseUrl, ""]]
   IsContinuous: !Equals [!Ref OrchestrationMode, continuous]
   IsScheduled: !Equals [!Ref OrchestrationMode, scheduled]
 
@@ -99,7 +85,7 @@ Resources:
   LogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
-      LogGroupName: !Sub "/${ProjectName}/process-edital"
+      LogGroupName: !Sub "/${ProjectName}/ingestion-pipeline"
       RetentionInDays: 14
 
   TaskExecutionRole:
@@ -138,7 +124,7 @@ Resources:
   TaskDefinition:
     Type: AWS::ECS::TaskDefinition
     Properties:
-      Family: !Sub "${ProjectName}-process-edital"
+      Family: !Sub "${ProjectName}-ingestion-pipeline"
       Cpu: "2048"
       Memory: "4096"
       NetworkMode: awsvpc
@@ -146,7 +132,7 @@ Resources:
       ExecutionRoleArn: !GetAtt TaskExecutionRole.Arn
       TaskRoleArn: !GetAtt TaskRole.Arn
       ContainerDefinitions:
-        - Name: process-edital-service
+        - Name: ingestion-pipeline-service
           Image: !Ref ServiceImage
           Essential: true
           LogConfiguration:
@@ -155,39 +141,70 @@ Resources:
               awslogs-group: !Ref LogGroup
               awslogs-region: !Ref AWS::Region
               awslogs-stream-prefix: ecs
-          Environment:
-            - Name: EVENT_BUS_NAME
-              Value: !Ref EventBusName
-            - Name: OLLAMA_BASE_URL
-              Value: !Ref OllamaBaseUrl
-            - Name: OLLAMA_MODEL
-              Value: !Ref OllamaModel
-            - Name: OLLAMA_TIMEOUT_MS
-              Value: !Ref OllamaTimeoutMs
-            - Name: OLLAMA_GENERATE_TIMEOUT_MS
-              Value: !Ref OllamaGenerateTimeoutMs
-            - Name: OLLAMA_EMBED_TIMEOUT_MS
-              Value: !Ref OllamaEmbedTimeoutMs
-            - Name: OLLAMA_MAX_CONTEXT_CHARS
-              Value: !Ref OllamaMaxContextChars
-            - Name: PROCESS_EDITAL_LIMIT
-              Value: !Ref ProcessEditalLimit
-            - Name: DELAY_BETWEEN_EDITAIS_MS
-              Value: !Ref DelayBetweenEditaisMs
-            - Name: PROCESS_EDITAL_CONCURRENCY
-              Value: !Ref ProcessEditalConcurrency
-            - Name: PROCESS_EDITAL_FIELD_CONCURRENCY
-              Value: !Ref ProcessEditalFieldConcurrency
-            - Name: ECS_WORKER_LOOP
-              Value: !If [IsContinuous, "1", "0"]
-            - Name: WORKER_IDLE_MS_AFTER_WORK
-              Value: !Sub "${WorkerIdleMsAfterWork}"
-            - Name: WORKER_IDLE_MS_NO_WORK
-              Value: !Sub "${WorkerIdleMsNoWork}"
-            - Name: SUPABASE_URL
-              Value: !Ref SupabaseUrl
-            - Name: SUPABASE_SERVICE_ROLE_KEY
-              Value: !Ref SupabaseServiceRoleKey
+          Environment: !If
+            - HasOllamaUrl
+            - - Name: EVENT_BUS_NAME
+                Value: !Ref EventBusName
+              - Name: SUPABASE_URL
+                Value: !Ref SupabaseUrl
+              - Name: SUPABASE_SERVICE_ROLE_KEY
+                Value: !Ref SupabaseServiceRoleKey
+              - Name: OLLAMA_BASE_URL
+                Value: !Ref OllamaBaseUrl
+              - Name: OLLAMA_CHAT_MODEL
+                Value: !Ref OllamaChatModel
+              - Name: OLLAMA_EMBED_MODEL
+                Value: !Ref OllamaEmbedModel
+              - Name: NODE_DNS_IPV4FIRST
+                Value: !Ref NodeDnsIpv4First
+              - Name: SCRAPER_FETCH_RETRIES
+                Value: !Ref ScraperFetchRetries
+              - Name: SCRAPER_FETCH_CONNECT_TIMEOUT_MS
+                Value: !Ref ScraperFetchConnectTimeoutMs
+              - Name: SCRAPER_FETCH_HEADERS_TIMEOUT_MS
+                Value: !Ref ScraperFetchHeadersTimeoutMs
+              - Name: SCRAPER_FETCH_BODY_TIMEOUT_MS
+                Value: !Ref ScraperFetchBodyTimeoutMs
+              - Name: SCRAPER_SOURCE_TIMEOUT_MS
+                Value: !Ref ScraperSourceTimeoutMs
+              - Name: SCRAPER_SOURCE
+                Value: "all"
+              - Name: ECS_WORKER_LOOP
+                Value: !If [IsContinuous, "1", "0"]
+              - Name: WORKER_IDLE_MS_AFTER_WORK
+                Value: !Sub "${WorkerIdleMsAfterWork}"
+              - Name: WORKER_IDLE_MS_NO_WORK
+                Value: !Sub "${WorkerIdleMsNoWork}"
+            - - Name: EVENT_BUS_NAME
+                Value: !Ref EventBusName
+              - Name: SUPABASE_URL
+                Value: !Ref SupabaseUrl
+              - Name: SUPABASE_SERVICE_ROLE_KEY
+                Value: !Ref SupabaseServiceRoleKey
+              - Name: OLLAMA_CHAT_MODEL
+                Value: !Ref OllamaChatModel
+              - Name: OLLAMA_EMBED_MODEL
+                Value: !Ref OllamaEmbedModel
+              - Name: NODE_DNS_IPV4FIRST
+                Value: !Ref NodeDnsIpv4First
+              - Name: SCRAPER_FETCH_RETRIES
+                Value: !Ref ScraperFetchRetries
+              - Name: SCRAPER_FETCH_CONNECT_TIMEOUT_MS
+                Value: !Ref ScraperFetchConnectTimeoutMs
+              - Name: SCRAPER_FETCH_HEADERS_TIMEOUT_MS
+                Value: !Ref ScraperFetchHeadersTimeoutMs
+              - Name: SCRAPER_FETCH_BODY_TIMEOUT_MS
+                Value: !Ref ScraperFetchBodyTimeoutMs
+              - Name: SCRAPER_SOURCE_TIMEOUT_MS
+                Value: !Ref ScraperSourceTimeoutMs
+              - Name: SCRAPER_SOURCE
+                Value: "all"
+              - Name: ECS_WORKER_LOOP
+                Value: !If [IsContinuous, "1", "0"]
+              - Name: WORKER_IDLE_MS_AFTER_WORK
+                Value: !Sub "${WorkerIdleMsAfterWork}"
+              - Name: WORKER_IDLE_MS_NO_WORK
+                Value: !Sub "${WorkerIdleMsNoWork}"
 
   SchedulerRole:
     Type: AWS::IAM::Role
@@ -219,7 +236,7 @@ Resources:
     Condition: IsContinuous
     Type: AWS::ECS::Service
     Properties:
-      ServiceName: !Sub "${ProjectName}-process-edital-worker"
+      ServiceName: !Sub "${ProjectName}-ingestion-pipeline-worker"
       Cluster: !Ref Cluster
       TaskDefinition: !Ref TaskDefinition
       DesiredCount: 1
@@ -241,7 +258,7 @@ Resources:
     Condition: IsScheduled
     Type: AWS::Scheduler::Schedule
     Properties:
-      Name: !Sub "${ProjectName}-process-edital"
+      Name: !Sub "${ProjectName}-ingestion-pipeline"
       FlexibleTimeWindow:
         Mode: "OFF"
       ScheduleExpression: !Ref ScheduleExpression
@@ -268,4 +285,3 @@ Outputs:
   WorkerServiceName:
     Condition: IsContinuous
     Value: !GetAtt WorkerService.Name
-

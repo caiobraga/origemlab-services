@@ -1,38 +1,26 @@
-# ECS deploy: process-edital-service (extract fields via Ollama → update editais).
+# ECS deploy: edital-pipeline (process-edital + validate-edital num único container).
+# Substitui os dois workers contínuos separados — use ECS_ORCHESTRATION_MODE=scheduled (default).
 #
 # Required repo variables:
-#   PROCESS_EDITAL_STACK_NAME              hyphens only (e.g. origemlab-process-edital)
-#   VPC_ID                Shared VPC for all ECS Fargate tasks
-#   SUBNET_IDS            Shared subnet IDs (comma-separated)
-#   SECURITY_GROUP_IDS    Shared security group IDs (comma-separated)
-# Required GitHub Actions repository secrets (same names as .env):
-#   SUPABASE_URL
-#   SUPABASE_SERVICE_ROLE_KEY
-# Optional (same names as .env):
+#   EDITAL_PIPELINE_STACK_NAME   (e.g. origemlab-edital-pipeline)
+#   VPC_ID, SUBNET_IDS, SECURITY_GROUP_IDS
 #   OLLAMA_BASE_URL
-#   OLLAMA_MODEL                         modelo no container (generate + embed fallback)
-#   PROCESS_EDITAL_OLLAMA_MODEL          se definida, sobrescreve OLLAMA_MODEL só neste deploy
-#   OLLAMA_TIMEOUT_MS                    default 600000 (embed + fallback)
-#   PROCESS_EDITAL_OLLAMA_GENERATE_TIMEOUT_MS / OLLAMA_GENERATE_TIMEOUT_MS  default 900000 no deploy (15 min /api/generate)
-#   PROCESS_EDITAL_OLLAMA_EMBED_TIMEOUT_MS / OLLAMA_EMBED_TIMEOUT_MS         default 180000 no deploy
-#   OLLAMA_MAX_CONTEXT_CHARS
-#   PROCESS_EDITAL_LIMIT
-#   DELAY_BETWEEN_EDITAIS_MS
-#   PROCESS_EDITAL_SCHEDULE_EXPRESSION (default rate(30 minutes); só com OrchestrationMode=scheduled)
-#   ECS_ORCHESTRATION_MODE (default continuous): continuous = ECS Service + loop no container; scheduled = só EventBridge
-#   WORKER_IDLE_MS_AFTER_WORK / WORKER_IDLE_MS_NO_WORK (opcional; defaults no CloudFormation)
-#   PROCESS_EDITAL_CLUSTER_NAME (default origemlab-process-edital)
-#   ECS_ROLLOUT_WAIT_STABLE (default 1): após CF, force-new-deployment + wait services-stable
-#   EVENT_BUS_NAME                         default default — DomainEvent para Telegram / error-reporter
-name: deploy-process-edital-service
+# Optional:
+#   EDITAL_PIPELINE_SCHEDULE_EXPRESSION (default rate(1 hour))
+#   EDITAL_PIPELINE_CLUSTER_NAME (default origemlab-edital-pipeline)
+#   ECS_ORCHESTRATION_MODE (default scheduled)
+#   EVENT_BUS_NAME, OLLAMA_MODEL, PROCESS_EDITAL_*, VALIDATE_*, etc. (mesmas dos stacks antigos)
+name: deploy-edital-pipeline-service
 
 on:
   push:
     branches: [main]
     paths:
+      - "services/edital-pipeline-service/**"
       - "services/process-edital-service/**"
-      - "infrastructure/ecs-process-edital-service.yml"
-      - ".github/workflows/deploy-process-edital-service.yml"
+      - "services/validate-edital-service/**"
+      - "infrastructure/ecs-edital-pipeline-service.yml"
+      - ".github/workflows/deploy-edital-pipeline-service.yml"
   workflow_dispatch: {}
   workflow_call: {}
 
@@ -41,7 +29,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: process-edital-service-${{ github.ref }}
+  group: edital-pipeline-service-${{ github.ref }}
   cancel-in-progress: true
 
 env:
@@ -62,41 +50,38 @@ jobs:
       - name: Verify ECR repository
         run: |
           set -euo pipefail
-          REPO="origemlab-process-edital-service"
+          REPO="origemlab-edital-pipeline-service"
           if ! aws ecr describe-repositories --repository-names "${REPO}" --region "${AWS_REGION}" >/dev/null; then
-            echo "ECR repository ${REPO} not found. Create it in the ECR console before deploying."
+            echo "ECR repository ${REPO} not found. Run infrastructure/ecr-repositories.yml or create ${REPO} in ECR."
             exit 1
           fi
-          echo "OK: ECR repository ${REPO}"
 
       - name: Login to Amazon ECR
         id: login-ecr
         uses: aws-actions/amazon-ecr-login@v2
 
       - name: Build and push image
-        working-directory: services/process-edital-service
         env:
           IMAGE_TAG: ${{ github.sha }}
         run: |
           REGISTRY="${{ steps.login-ecr.outputs.registry }}"
-          IMAGE="${REGISTRY}/origemlab-process-edital-service"
-          docker build -t "${IMAGE}:${IMAGE_TAG}" -t "${IMAGE}:latest" .
+          IMAGE="${REGISTRY}/origemlab-edital-pipeline-service"
+          docker build -f services/edital-pipeline-service/Dockerfile -t "${IMAGE}:${IMAGE_TAG}" -t "${IMAGE}:latest" .
           docker push "${IMAGE}:${IMAGE_TAG}"
           docker push "${IMAGE}:latest"
           echo "IMAGE_URI=${IMAGE}:${IMAGE_TAG}" >> "$GITHUB_ENV"
-          echo "Built and pushed ${IMAGE}:${IMAGE_TAG}"
 
       - name: Deploy ECS stack (CloudFormation)
         env:
-          STACK_NAME: ${{ vars.PROCESS_EDITAL_STACK_NAME }}
+          STACK_NAME: ${{ vars.EDITAL_PIPELINE_STACK_NAME }}
           VPC_ID: ${{ vars.VPC_ID }}
           SUBNET_IDS: ${{ vars.SUBNET_IDS }}
           SECURITY_GROUP_IDS: ${{ vars.SECURITY_GROUP_IDS }}
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
           OLLAMA_BASE_URL: ${{ vars.OLLAMA_BASE_URL }}
-          SCHEDULE_EXPRESSION: ${{ vars.PROCESS_EDITAL_SCHEDULE_EXPRESSION }}
-          CLUSTER_NAME: ${{ vars.PROCESS_EDITAL_CLUSTER_NAME }}
+          SCHEDULE_EXPRESSION: ${{ vars.EDITAL_PIPELINE_SCHEDULE_EXPRESSION }}
+          CLUSTER_NAME: ${{ vars.EDITAL_PIPELINE_CLUSTER_NAME }}
           OLLAMA_MODEL: ${{ vars.OLLAMA_MODEL }}
           PROCESS_EDITAL_OLLAMA_MODEL: ${{ vars.PROCESS_EDITAL_OLLAMA_MODEL }}
           OLLAMA_TIMEOUT_MS: ${{ vars.OLLAMA_TIMEOUT_MS }}
@@ -107,13 +92,20 @@ jobs:
           OLLAMA_MAX_CONTEXT_CHARS: ${{ vars.OLLAMA_MAX_CONTEXT_CHARS }}
           PROCESS_EDITAL_LIMIT: ${{ vars.PROCESS_EDITAL_LIMIT }}
           DELAY_BETWEEN_EDITAIS_MS: ${{ vars.DELAY_BETWEEN_EDITAIS_MS }}
+          PROCESS_EDITAL_CONCURRENCY: ${{ vars.PROCESS_EDITAL_CONCURRENCY }}
+          PROCESS_EDITAL_FIELD_CONCURRENCY: ${{ vars.PROCESS_EDITAL_FIELD_CONCURRENCY }}
+          VALIDATE_EDITAIS_LIMIT: ${{ vars.VALIDATE_EDITAIS_LIMIT }}
+          VALIDATE_EDITAIS_BATCH: ${{ vars.VALIDATE_EDITAIS_BATCH }}
+          API_REQUEST_DELAY_MS: ${{ vars.VALIDATE_API_REQUEST_DELAY_MS }}
+          VALIDATE_EDITAL_CONCURRENCY: ${{ vars.VALIDATE_EDITAL_CONCURRENCY }}
+          VALIDATE_FIELD_CONCURRENCY: ${{ vars.VALIDATE_FIELD_CONCURRENCY }}
           ECS_ORCHESTRATION_MODE: ${{ vars.ECS_ORCHESTRATION_MODE }}
           WORKER_IDLE_MS_AFTER_WORK: ${{ vars.WORKER_IDLE_MS_AFTER_WORK }}
           WORKER_IDLE_MS_NO_WORK: ${{ vars.WORKER_IDLE_MS_NO_WORK }}
           EVENT_BUS_NAME: ${{ vars.EVENT_BUS_NAME }}
         run: |
           set -euo pipefail
-          : "${STACK_NAME:?Set repo variable PROCESS_EDITAL_STACK_NAME}"
+          : "${STACK_NAME:?Set repo variable EDITAL_PIPELINE_STACK_NAME}"
           STACK_NAME="$(bash .github/scripts/normalize-cloudformation-stack-name.sh "${STACK_NAME}")"
           : "${VPC_ID:?Set repo variable VPC_ID}"
           : "${SUBNET_IDS:?Set repo variable SUBNET_IDS}"
@@ -121,17 +113,16 @@ jobs:
           : "${SUPABASE_URL:?Set repo secret SUPABASE_URL}"
           : "${SUPABASE_SERVICE_ROLE_KEY:?Set repo secret SUPABASE_SERVICE_ROLE_KEY}"
           : "${OLLAMA_BASE_URL:?Set repo variable OLLAMA_BASE_URL}"
-          : "${IMAGE_URI:?IMAGE_URI missing after ECR push}"
+          : "${IMAGE_URI:?IMAGE_URI missing}"
 
           escape_cf_list() { printf '%s' "$1" | sed 's/,/\\,/g'; }
           SUBNET_IDS_CF=$(escape_cf_list "${SUBNET_IDS}")
           SG_IDS_CF=$(escape_cf_list "${SECURITY_GROUP_IDS}")
 
-          SCHED="${SCHEDULE_EXPRESSION:-rate(30 minutes)}"
-          CLUSTER="${CLUSTER_NAME:-origemlab-process-edital}"
+          SCHED="${SCHEDULE_EXPRESSION:-rate(1 hour)}"
+          CLUSTER="${CLUSTER_NAME:-origemlab-edital-pipeline}"
           ORCH="${ECS_ORCHESTRATION_MODE:-scheduled}"
           EB="${EVENT_BUS_NAME:-default}"
-          echo "CloudFormation EventBusName=${EB}"
 
           OVERRIDES=(
             "ServiceImage=${IMAGE_URI}"
@@ -147,19 +138,15 @@ jobs:
             "EventBusName=${EB}"
           )
 
-          # Sempre enviar OllamaModel: se só PROCESS_EDITAL_OLLAMA_MODEL estiver no GitHub, o antigo
-          # `if [ -n OLLAMA_MODEL ]` omitia o override e o stack ficava no default CloudFormation (qwen2.5:7b).
           _proc_ollama="$(printf '%s' "${PROCESS_EDITAL_OLLAMA_MODEL:-}" | tr -d '\r' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
           _shared_ollama="$(printf '%s' "${OLLAMA_MODEL:-}" | tr -d '\r' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
           _ollama_effective="${_proc_ollama:-${_shared_ollama}}"
           _ollama_effective="${_ollama_effective:-qwen2.5:7b}"
           OVERRIDES+=("OllamaModel=${_ollama_effective}")
-          echo "CloudFormation parameter OllamaModel=${_ollama_effective} (PROCESS_EDITAL_OLLAMA_MODEL > OLLAMA_MODEL > template default)"
 
           _timeout_eff="$(printf '%s' "${OLLAMA_TIMEOUT_MS:-600000}" | tr -d '\r' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
           [[ "${_timeout_eff}" =~ ^[0-9]+$ ]] || _timeout_eff=600000
           OVERRIDES+=("OllamaTimeoutMs=${_timeout_eff}")
-          echo "CloudFormation parameter OllamaTimeoutMs=${_timeout_eff}"
 
           _gen_proc="$(printf '%s' "${PROCESS_EDITAL_OLLAMA_GENERATE_TIMEOUT_MS:-}" | tr -d '\r' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
           _gen_shared="$(printf '%s' "${OLLAMA_GENERATE_TIMEOUT_MS:-}" | tr -d '\r' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
@@ -167,7 +154,6 @@ jobs:
           _gen_eff="${_gen_eff:-900000}"
           [[ "${_gen_eff}" =~ ^[0-9]+$ ]] || _gen_eff=900000
           OVERRIDES+=("OllamaGenerateTimeoutMs=${_gen_eff}")
-          echo "CloudFormation parameter OllamaGenerateTimeoutMs=${_gen_eff} (PROCESS_EDITAL_OLLAMA_GENERATE_TIMEOUT_MS > OLLAMA_GENERATE_TIMEOUT_MS > 900000)"
 
           _emb_proc="$(printf '%s' "${PROCESS_EDITAL_OLLAMA_EMBED_TIMEOUT_MS:-}" | tr -d '\r' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
           _emb_shared="$(printf '%s' "${OLLAMA_EMBED_TIMEOUT_MS:-}" | tr -d '\r' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
@@ -175,52 +161,25 @@ jobs:
           _emb_eff="${_emb_eff:-180000}"
           [[ "${_emb_eff}" =~ ^[0-9]+$ ]] || _emb_eff=180000
           OVERRIDES+=("OllamaEmbedTimeoutMs=${_emb_eff}")
-          echo "CloudFormation parameter OllamaEmbedTimeoutMs=${_emb_eff}"
 
-          if [ -n "${OLLAMA_MAX_CONTEXT_CHARS:-}" ]; then
-            OVERRIDES+=("OllamaMaxContextChars=${OLLAMA_MAX_CONTEXT_CHARS}")
-          fi
-          if [ -n "${PROCESS_EDITAL_LIMIT:-}" ]; then
-            OVERRIDES+=("ProcessEditalLimit=${PROCESS_EDITAL_LIMIT}")
-          fi
-          if [ -n "${DELAY_BETWEEN_EDITAIS_MS:-}" ]; then
-            OVERRIDES+=("DelayBetweenEditaisMs=${DELAY_BETWEEN_EDITAIS_MS}")
-          fi
-          if [ -n "${PROCESS_EDITAL_CONCURRENCY:-}" ]; then
-            OVERRIDES+=("ProcessEditalConcurrency=${PROCESS_EDITAL_CONCURRENCY}")
-          fi
-          if [ -n "${PROCESS_EDITAL_FIELD_CONCURRENCY:-}" ]; then
-            OVERRIDES+=("ProcessEditalFieldConcurrency=${PROCESS_EDITAL_FIELD_CONCURRENCY}")
-          fi
-          if [ -n "${WORKER_IDLE_MS_AFTER_WORK:-}" ]; then
-            OVERRIDES+=("WorkerIdleMsAfterWork=${WORKER_IDLE_MS_AFTER_WORK}")
-          fi
-          if [ -n "${WORKER_IDLE_MS_NO_WORK:-}" ]; then
-            OVERRIDES+=("WorkerIdleMsNoWork=${WORKER_IDLE_MS_NO_WORK}")
-          fi
+          [ -n "${OLLAMA_MAX_CONTEXT_CHARS:-}" ] && OVERRIDES+=("OllamaMaxContextChars=${OLLAMA_MAX_CONTEXT_CHARS}")
+          [ -n "${PROCESS_EDITAL_LIMIT:-}" ] && OVERRIDES+=("ProcessEditalLimit=${PROCESS_EDITAL_LIMIT}")
+          [ -n "${DELAY_BETWEEN_EDITAIS_MS:-}" ] && OVERRIDES+=("DelayBetweenEditaisMs=${DELAY_BETWEEN_EDITAIS_MS}")
+          [ -n "${PROCESS_EDITAL_CONCURRENCY:-}" ] && OVERRIDES+=("ProcessEditalConcurrency=${PROCESS_EDITAL_CONCURRENCY}")
+          [ -n "${PROCESS_EDITAL_FIELD_CONCURRENCY:-}" ] && OVERRIDES+=("ProcessEditalFieldConcurrency=${PROCESS_EDITAL_FIELD_CONCURRENCY}")
+          [ -n "${VALIDATE_EDITAIS_LIMIT:-}" ] && OVERRIDES+=("ValidateEditaisLimit=${VALIDATE_EDITAIS_LIMIT}")
+          [ -n "${VALIDATE_EDITAIS_BATCH:-}" ] && OVERRIDES+=("ValidateEditaisBatch=${VALIDATE_EDITAIS_BATCH}")
+          [ -n "${API_REQUEST_DELAY_MS:-}" ] && OVERRIDES+=("ApiRequestDelayMs=${API_REQUEST_DELAY_MS}")
+          [ -n "${VALIDATE_EDITAL_CONCURRENCY:-}" ] && OVERRIDES+=("ValidateEditalConcurrency=${VALIDATE_EDITAL_CONCURRENCY}")
+          [ -n "${VALIDATE_FIELD_CONCURRENCY:-}" ] && OVERRIDES+=("ValidateFieldConcurrency=${VALIDATE_FIELD_CONCURRENCY}")
+          [ -n "${WORKER_IDLE_MS_AFTER_WORK:-}" ] && OVERRIDES+=("WorkerIdleMsAfterWork=${WORKER_IDLE_MS_AFTER_WORK}")
+          [ -n "${WORKER_IDLE_MS_NO_WORK:-}" ] && OVERRIDES+=("WorkerIdleMsNoWork=${WORKER_IDLE_MS_NO_WORK}")
 
-          if ! aws cloudformation deploy \
-            --template-file infrastructure/ecs-process-edital-service.yml \
+          aws cloudformation deploy \
+            --template-file infrastructure/ecs-edital-pipeline-service.yml \
             --stack-name "${STACK_NAME}" \
             --capabilities CAPABILITY_IAM \
             --no-fail-on-empty-changeset \
-            --parameter-overrides "${OVERRIDES[@]}"; then
-            echo ""
-            echo "CloudFormation deploy failed. FAILED events (check ResourceStatusReason):"
-            aws cloudformation describe-stack-events \
-              --stack-name "${STACK_NAME}" \
-              --query 'StackEvents[?ResourceStatus==`CREATE_FAILED` || ResourceStatus==`UPDATE_FAILED` || ResourceStatus==`DELETE_FAILED`].[Timestamp,LogicalResourceId,ResourceStatus,ResourceStatusReason]' \
-              --output table 2>/dev/null || true
-            echo ""
-            echo "Most recent stack events (up to 35):"
-            aws cloudformation describe-stack-events \
-              --stack-name "${STACK_NAME}" \
-              --max-items 35 \
-              --output table 2>/dev/null || true
-            exit 1
-          fi
-
-          echo "Stack ${STACK_NAME} updated; ServiceImage=${IMAGE_URI}"
+            --parameter-overrides "${OVERRIDES[@]}"
 
           bash .github/scripts/ecs-force-rollout-after-cfn.sh "${STACK_NAME}" "${ORCH}"
-

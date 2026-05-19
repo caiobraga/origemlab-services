@@ -33,6 +33,20 @@ Resources:
       ImageScanningConfiguration:
         ScanOnPush: true
 
+  EditalPipelineServiceRepository:
+    Type: AWS::ECR::Repository
+    Properties:
+      RepositoryName: origemlab-edital-pipeline-service
+      ImageScanningConfiguration:
+        ScanOnPush: true
+
+  IngestionPipelineServiceRepository:
+    Type: AWS::ECR::Repository
+    Properties:
+      RepositoryName: origemlab-ingestion-pipeline-service
+      ImageScanningConfiguration:
+        ScanOnPush: true
+
 Outputs:
   ScraperRunnerRepositoryUri:
     Value: !GetAtt ScraperRunnerRepository.RepositoryUri
@@ -42,3 +56,7 @@ Outputs:
     Value: !GetAtt ProcessEditalServiceRepository.RepositoryUri
   ValidateEditalServiceRepositoryUri:
     Value: !GetAtt ValidateEditalServiceRepository.RepositoryUri
+  EditalPipelineServiceRepositoryUri:
+    Value: !GetAtt EditalPipelineServiceRepository.RepositoryUri
+  IngestionPipelineServiceRepositoryUri:
+    Value: !GetAtt IngestionPipelineServiceRepository.RepositoryUri

@@ -1,8 +1,11 @@
 import "../load-env";
 
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { createSupabase } from "../lib/supabase";
 import { getMaxContextChars, ollamaGenerate } from "../lib/ollama";
+import { mapPool, readConcurrencyEnv } from "../lib/concurrency.js";
 
 type FieldEvidence = {
   source: "topk" | "window" | "bulk";
@@ -615,14 +618,29 @@ async function validateOneEdital(
   const skipPolish = String(process.env.VALIDATE_SKIP_POLISH || "").trim() === "1";
 
   const reportFields: Record<string, any> = {};
+  const fieldConcurrency = readConcurrencyEnv("VALIDATE_FIELD_CONCURRENCY", 2, 4);
 
-  for (const field of EXTRACTED_FIELDS) {
+  type FieldOutcome = {
+    field: FieldKey;
+    report: Record<string, unknown>;
+    finalValue: any;
+    auditedOk: boolean;
+    before: any;
+    dbUpdate: "null" | "value" | null;
+  };
+
+  const runField = async (field: FieldKey): Promise<FieldOutcome> => {
     const before = (edital as any)[field] ?? null;
 
     if (!hasMeaningfulExtractedValue(field, before)) {
-      reportFields[field] = { status: "skipped", reason: "before_is_null", before, after: null };
-      current[field] = null;
-      continue;
+      return {
+        field,
+        report: { status: "skipped", reason: "before_is_null", before, after: null },
+        finalValue: null,
+        auditedOk: false,
+        before,
+        dbUpdate: null,
+      };
     }
 
     const evidence = evidenceMap[field] as FieldEvidence | undefined;
@@ -650,7 +668,7 @@ async function validateOneEdital(
     else if (finalValue === null && before !== null) status = "cleared";
     else if (JSON.stringify(before) !== JSON.stringify(finalValue)) status = "corrected";
 
-    reportFields[field] = {
+    const report = {
       status,
       before: field === "timeline_estimada" ? normalizeTimelineEstimada(before) : before,
       after: field === "timeline_estimada" ? normalizeTimelineEstimada(finalValue) : finalValue,
@@ -666,13 +684,33 @@ async function validateOneEdital(
         : null,
     };
 
-    if (!audited.ok) continue;
+    if (!audited.ok) {
+      return { field, report, finalValue: null, auditedOk: false, before, dbUpdate: null };
+    }
 
-    current[field] = finalValue;
     const shouldNull = finalValue === null && before !== null && before !== undefined;
     const changed = finalValue !== null && JSON.stringify(before) !== JSON.stringify(finalValue);
-    if (shouldNull) await updateOriginalEditalField(supabase, edital.id, field, null);
-    else if (changed) await updateOriginalEditalField(supabase, edital.id, field, finalValue);
+    let dbUpdate: "null" | "value" | null = null;
+    if (shouldNull) dbUpdate = "null";
+    else if (changed) dbUpdate = "value";
+
+    return { field, report, finalValue, auditedOk: true, before, dbUpdate };
+  };
+
+  const fieldOutcomes =
+    fieldConcurrency > 1
+      ? await mapPool(EXTRACTED_FIELDS, fieldConcurrency, runField)
+      : await Promise.all(EXTRACTED_FIELDS.map((field) => runField(field)));
+
+  for (const o of fieldOutcomes) {
+    reportFields[o.field] = o.report;
+    if (!o.auditedOk) {
+      current[o.field] = null;
+      continue;
+    }
+    current[o.field] = o.finalValue;
+    if (o.dbUpdate === "null") await updateOriginalEditalField(supabase, edital.id, o.field, null);
+    else if (o.dbUpdate === "value") await updateOriginalEditalField(supabase, edital.id, o.field, o.finalValue);
   }
 
   current.prazo_inscricao = canonicalizePrazoInscricaoForSite(current.prazo_inscricao);
@@ -736,17 +774,25 @@ function workerIdleMsNoWork(): number {
   return Number.isFinite(n) ? Math.max(0, n) : 120000;
 }
 
-async function runValidateBatch(): Promise<{ hadWork: boolean }> {
+export async function runValidateBatch(): Promise<{ hadWork: boolean }> {
   const supabase = createSupabase();
 
   const limitRaw = parseInt(process.env.VALIDATE_EDITAIS_LIMIT || "0", 10);
   const totalLimit = Number.isFinite(limitRaw) && limitRaw > 0 ? limitRaw : Infinity;
   const batchSize = Math.max(20, parseInt(process.env.VALIDATE_EDITAIS_BATCH || "200", 10) || 200);
-  const delayMs = parseInt(process.env.API_REQUEST_DELAY_MS || "3000", 10);
-  const betweenEditaisMs = parseInt(process.env.DELAY_BETWEEN_EDITAIS_MS || "6000", 10);
+  const editalConcurrency = readConcurrencyEnv("VALIDATE_EDITAL_CONCURRENCY", 2, 6);
+  const delayDefault = editalConcurrency > 1 ? "0" : "3000";
+  const betweenDefault = editalConcurrency > 1 ? "0" : "6000";
+  const delayMs = Math.max(0, parseInt(process.env.API_REQUEST_DELAY_MS || delayDefault, 10) || 0);
+  const betweenEditaisMs = Math.max(
+    0,
+    parseInt(process.env.DELAY_BETWEEN_EDITAIS_MS || betweenDefault, 10) || 0,
+  );
 
   console.log("🔎 validate-edital-service (Ollama-only)");
-  console.log(`📦 limit=${Number.isFinite(totalLimit) ? totalLimit : "∞"} batch=${batchSize} scope=todos_processados`);
+  console.log(
+    `📦 limit=${Number.isFinite(totalLimit) ? totalLimit : "∞"} batch=${batchSize} editalConcurrency=${editalConcurrency} fieldConcurrency=${readConcurrencyEnv("VALIDATE_FIELD_CONCURRENCY", 2, 4)} delayMs=${delayMs} betweenEditaisMs=${betweenEditaisMs} scope=todos_processados`,
+  );
 
   let ok = 0;
   let fail = 0;
@@ -758,8 +804,8 @@ async function runValidateBatch(): Promise<{ hadWork: boolean }> {
     "id,numero,titulo,descricao,processado_em,criado_em,atualizado_em,data_publicacao,data_encerramento,status,valor,area,orgao,fonte,link,informacoes_processadas_em,informacoes_extracao_evidence,valor_projeto,prazo_inscricao,localizacao,vagas,is_researcher,is_company,sobre_programa,criterios_elegibilidade,timeline_estimada";
 
   for (let offset = 0; seen < totalLimit; offset += batchSize) {
-    const remaining = Number.isFinite(totalLimit) ? Math.max(0, totalLimit - seen) : batchSize;
-    const pageLimit = Math.min(batchSize, remaining || batchSize);
+    const remainingQuota = Number.isFinite(totalLimit) ? Math.max(0, totalLimit - seen) : batchSize;
+    const pageLimit = Math.min(batchSize, remainingQuota || batchSize);
 
     const { data: pageData, error } = await supabase
       .from("editais")
@@ -773,19 +819,19 @@ async function runValidateBatch(): Promise<{ hadWork: boolean }> {
     if (page.length === 0) break;
     hadPotentialWork = true;
 
-    for (const edital of page) {
-      if (seen >= totalLimit) break;
-      seen++;
+    const toRun = Number.isFinite(totalLimit)
+      ? page.slice(0, Math.min(page.length, remainingQuota))
+      : page;
+    seen += toRun.length;
 
+    const processEdital = async (edital: EditalRow) => {
       const nonNullFields = listNonNullExtractedFields(edital);
       const fieldsLabel = nonNullFields.length ? nonNullFields.join(", ") : "nenhum";
       console.log(`\n🧾 ${edital.numero || "N/A"} — ${edital.titulo} (${edital.fonte}) [campos=${fieldsLabel}]`);
       if (nonNullFields.length === 0) {
         skipped++;
         console.log("  ⚠️ Pulado: sem_campos_extraidos_em_editais (correr process-edital antes ou ignorar)");
-        if (delayMs > 0) await new Promise((r) => setTimeout(r, delayMs));
-        if (betweenEditaisMs > 0) await new Promise((r) => setTimeout(r, betweenEditaisMs));
-        continue;
+        return;
       }
       try {
         const r = await validateOneEdital(supabase, edital);
@@ -801,9 +847,23 @@ async function runValidateBatch(): Promise<{ hadWork: boolean }> {
         fail++;
         console.error("  ❌ Falhou:", e instanceof Error ? e.message : String(e));
       }
+    };
 
-      if (delayMs > 0) await new Promise((r) => setTimeout(r, delayMs));
-      if (betweenEditaisMs > 0) await new Promise((r) => setTimeout(r, betweenEditaisMs));
+    if (editalConcurrency > 1 && toRun.length > 1) {
+      const chunkSize = editalConcurrency;
+      for (let start = 0; start < toRun.length; start += chunkSize) {
+        const chunk = toRun.slice(start, start + chunkSize);
+        await Promise.all(chunk.map((edital) => processEdital(edital)));
+        if (betweenEditaisMs > 0 && start + chunkSize < toRun.length) {
+          await new Promise((r) => setTimeout(r, betweenEditaisMs));
+        }
+      }
+    } else {
+      for (const edital of toRun) {
+        await processEdital(edital);
+        if (delayMs > 0) await new Promise((r) => setTimeout(r, delayMs));
+        if (betweenEditaisMs > 0) await new Promise((r) => setTimeout(r, betweenEditaisMs));
+      }
     }
   }
 
@@ -835,8 +895,14 @@ async function main() {
   await runValidateBatch();
 }
 
-main().catch((e) => {
-  console.error("❌ fatal:", e);
-  process.exitCode = 1;
-});
+const isDirectCliRun =
+  typeof process.argv[1] === "string" &&
+  path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+
+if (isDirectCliRun) {
+  main().catch((e) => {
+    console.error("❌ fatal:", e);
+    process.exitCode = 1;
+  });
+}
 

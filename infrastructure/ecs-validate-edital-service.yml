@@ -34,7 +34,7 @@ Parameters:
     Description: "Base URL do Ollama (ex.: http://host:11434)"
   OllamaModel:
     Type: String
-    Default: "qwen2.5:14b"
+    Default: "qwen2.5:7b"
   OllamaTimeoutMs:
     Type: Number
     Default: 240000
@@ -49,10 +49,19 @@ Parameters:
     Default: 200
   ApiRequestDelayMs:
     Type: Number
-    Default: 3000
+    Default: 0
+    Description: "Pausa após cada edital (ms). Com VALIDATE_EDITAL_CONCURRENCY>1 o default no código é 0."
   DelayBetweenEditaisMs:
     Type: Number
-    Default: 6000
+    Default: 0
+  ValidateEditalConcurrency:
+    Type: Number
+    Default: 2
+    Description: "Editais validados em paralelo por task"
+  ValidateFieldConcurrency:
+    Type: Number
+    Default: 2
+    Description: "Campos auditados em paralelo por edital"
   OllamaEmbedModel:
     Type: String
     Default: "mxbai-embed-large:latest"
@@ -61,7 +70,7 @@ Parameters:
     Default: 0
   OrchestrationMode:
     Type: String
-    Default: continuous
+    Default: scheduled
     AllowedValues:
       - continuous
       - scheduled
@@ -151,6 +160,10 @@ Resources:
               Value: !Ref ApiRequestDelayMs
             - Name: DELAY_BETWEEN_EDITAIS_MS
               Value: !Ref DelayBetweenEditaisMs
+            - Name: VALIDATE_EDITAL_CONCURRENCY
+              Value: !Ref ValidateEditalConcurrency
+            - Name: VALIDATE_FIELD_CONCURRENCY
+              Value: !Ref ValidateFieldConcurrency
             - Name: VALIDATE_FORCE_REVALIDATE
               Value: !Ref ValidateForceRevalidate
             - Name: ECS_WORKER_LOOP

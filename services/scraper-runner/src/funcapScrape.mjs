@@ -1,6 +1,13 @@
 import * as cheerio from "cheerio";
 import { fetchWithScraperAgent } from "./fetchAgent.mjs";
 import { filterEditaisCurrentYear } from "./yearFilter.mjs";
+import {
+  extractNumeroFromLinkText,
+  extractParentEditalNumero,
+  isSupplementTitle,
+  normalizeSpaces,
+  pickPreferredTitulo,
+} from "./scraperTitleUtils.mjs";
 
 const BASE = "https://montenegro.funcap.ce.gov.br/sugba";
 const LIST_URL = `${BASE}/editais/`;
@@ -15,19 +22,6 @@ function absoluteUrl(href) {
     if (h.startsWith("../")) return new URL(h, LIST_URL).toString();
     return `${BASE}/${h.replace(/^\//, "")}`;
   }
-}
-
-function normalizeSpaces(s) {
-  return String(s || "").replace(/\u00a0/g, " ").replace(/\s+/g, " ").trim();
-}
-
-function extractNumero(titulo) {
-  const t = String(titulo || "");
-  const m = t.match(/N[º°]?\s*(\d+)\s*\/\s*(\d{4})/i) || t.match(/Edital\s*(\d+)\s*\/\s*(\d{4})/i);
-  if (m) return `${m[1]}/${m[2]}`;
-  const m2 = t.match(/(\d{1,4})\/(\d{4})/);
-  if (m2) return `${m2[1]}/${m2[2]}`;
-  return "";
 }
 
 async function fetchText(url, timeoutMs = 60000) {
@@ -52,32 +46,79 @@ async function fetchText(url, timeoutMs = 60000) {
   }
 }
 
+function blockContextForAnchor($, el) {
+  const $el = $(el);
+  const block = $el.closest("li, tr, article, section, .entry, .post, td, .wp-block-group, p");
+  return normalizeSpaces(block.text()).slice(0, 2500);
+}
+
 function extractEditais(html) {
   const $ = cheerio.load(html);
   const byNumero = new Map();
+  /** PDFs de adendo sem número de edital pai no texto — segunda passagem. */
+  const orphanSupplements = [];
 
   $("a[href]").each((_, el) => {
     const href = String($(el).attr("href") || "").trim();
     if (!href) return;
     const abs = absoluteUrl(href);
     if (!abs || !abs.toLowerCase().includes(".pdf")) return;
+
     const text = normalizeSpaces($(el).text());
-    const numero = extractNumero(text);
-    if (!numero) return;
+    if (!text || text.length < 4) return;
+
+    const blockContext = blockContextForAnchor($, el);
+    const numero = extractNumeroFromLinkText(text, { blockContext });
+    const supplement = isSupplementTitle(text);
+
+    if (!numero) {
+      if (supplement) {
+        orphanSupplements.push({ abs, text, blockContext });
+      }
+      return;
+    }
 
     const existing = byNumero.get(numero);
     if (existing) {
       if (!existing.pdfUrls.includes(abs)) existing.pdfUrls.push(abs);
+      if (!supplement) {
+        existing.titulo = pickPreferredTitulo(existing.titulo, text);
+      }
     } else {
-      byNumero.set(numero, { titulo: text || `Edital ${numero}`, pdfUrls: [abs] });
+      const titulo = supplement
+        ? `Edital ${numero}`
+        : text || `Edital ${numero}`;
+      byNumero.set(numero, {
+        titulo: pickPreferredTitulo("", titulo),
+        pdfUrls: [abs],
+      });
     }
   });
 
+  for (const { abs, text, blockContext } of orphanSupplements) {
+    const parent = extractParentEditalNumero(blockContext);
+    if (!parent) continue;
+    const existing = byNumero.get(parent);
+    if (existing) {
+      if (!existing.pdfUrls.includes(abs)) existing.pdfUrls.push(abs);
+      existing.titulo = pickPreferredTitulo(existing.titulo, text);
+    } else {
+      byNumero.set(parent, {
+        titulo: `Edital ${parent}`,
+        pdfUrls: [abs],
+      });
+    }
+  }
+
   const editais = [];
   for (const [numero, v] of byNumero.entries()) {
+    let titulo = String(v.titulo || `Edital ${numero}`).slice(0, 400);
+    if (isSupplementTitle(titulo)) {
+      titulo = `Edital ${numero}`;
+    }
     editais.push({
       numero,
-      titulo: String(v.titulo || `Edital ${numero}`).slice(0, 400),
+      titulo,
       fonte: "funcap",
       orgao: "FUNCAP",
       link: LIST_URL,
@@ -92,4 +133,3 @@ export async function scrapeFuncapCurrentYear() {
   const html = await fetchText(LIST_URL, 90000);
   return filterEditaisCurrentYear(extractEditais(html));
 }
-
