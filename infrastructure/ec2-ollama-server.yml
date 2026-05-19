@@ -44,10 +44,15 @@ Parameters:
     Type: String
     Default: ""
     Description: "CIDR extra para porta 11434 (ex. rede do EB se estiver fora da VPC)"
+  PublicAccessCidr:
+    Type: String
+    Default: "0.0.0.0/0"
+    Description: "Quem pode aceder :11434 fora da VPC (dev local, browser). Use seu-ip/32 em prod; vazio = desliga."
 
 Conditions:
   HasKeyPair: !Not [!Equals [!Ref KeyPairName, ""]]
   HasAdditionalCidr: !Not [!Equals [!Ref AdditionalIngressCidr, ""]]
+  HasPublicAccessCidr: !Not [!Equals [!Ref PublicAccessCidr, ""]]
 
 Resources:
   OllamaInstanceRole:
@@ -92,7 +97,18 @@ Resources:
       FromPort: 11434
       ToPort: 11434
       CidrIp: !Ref AdditionalIngressCidr
-      Description: Ollama extra CIDR (EB / admin)
+      Description: Ollama extra CIDR
+
+  OllamaPublicIngress:
+    Type: AWS::EC2::SecurityGroupIngress
+    Condition: HasPublicAccessCidr
+    Properties:
+      GroupId: !Ref OllamaSecurityGroup
+      IpProtocol: tcp
+      FromPort: 11434
+      ToPort: 11434
+      CidrIp: !Ref PublicAccessCidr
+      Description: Ollama from Internet or local dev
 
   OllamaElasticIp:
     Type: AWS::EC2::EIP

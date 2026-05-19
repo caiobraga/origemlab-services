@@ -46,6 +46,7 @@ jobs:
           OLLAMA_CHAT_MODEL: ${{ vars.OLLAMA_CHAT_MODEL }}
           OLLAMA_EMBED_MODEL: ${{ vars.OLLAMA_EMBED_MODEL }}
           ADDITIONAL_INGRESS_CIDR: ${{ vars.OLLAMA_SERVER_ADDITIONAL_INGRESS_CIDR }}
+          PUBLIC_ACCESS_CIDR: ${{ vars.OLLAMA_SERVER_PUBLIC_ACCESS_CIDR }}
           KEY_PAIR_NAME: ${{ vars.OLLAMA_SERVER_KEY_PAIR_NAME }}
           AMI_ID: ${{ vars.OLLAMA_SERVER_AMI_ID }}
         run: |
@@ -80,6 +81,8 @@ jobs:
             "RootVolumeSizeGb=${VOL}"
           )
           [ -n "${ADDITIONAL_INGRESS_CIDR:-}" ] && OVERRIDES+=("AdditionalIngressCidr=${ADDITIONAL_INGRESS_CIDR}")
+          PUBLIC_CIDR="$(printf '%s' "${PUBLIC_ACCESS_CIDR:-0.0.0.0/0}" | tr -d '[:space:]')"
+          [ -n "${PUBLIC_CIDR}" ] && OVERRIDES+=("PublicAccessCidr=${PUBLIC_CIDR}")
           [ -n "${KEY_PAIR_NAME:-}" ] && OVERRIDES+=("KeyPairName=${KEY_PAIR_NAME}")
           OVERRIDES+=("AmiId=${RESOLVED_AMI}")
 

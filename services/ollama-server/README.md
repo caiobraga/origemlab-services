@@ -42,6 +42,24 @@ Depois do primeiro deploy, copie o output **`OllamaBaseUrl`** para:
 - `origemlab-services` → `OLLAMA_BASE_URL`
 - `origemlab-backend` → `OLLAMA_BASE_URL` (+ `OLLAMA_MODEL`)
 
+## Testar se o Ollama responde
+
+O browser em `http://<ElasticIP>:11434/` pode não mostrar HTML; use:
+
+```bash
+curl -s http://52.6.141.185:11434/api/tags
+```
+
+Se der timeout **do teu PC** mas a EC2 existe: o security group antigo só abria a porta **para a VPC** (`172.31.0.0/16`). Faz redeploy com `PublicAccessCidr=0.0.0.0/0` (default no template) ou define no GitHub `OLLAMA_SERVER_PUBLIC_ACCESS_CIDR=seu-ip/32`.
+
+Na instância (SSM), o bootstrap demora vários minutos (`ollama pull`):
+
+```bash
+aws ssm start-session --target <InstanceId>
+sudo tail -f /var/log/ollama-userdata.log
+curl -s http://127.0.0.1:11434/api/tags
+```
+
 ## Alterar modelos
 
 1. Atualize `OLLAMA_CHAT_MODEL` / `OLLAMA_EMBED_MODEL` (e `OLLAMA_MODEL` no backend / pipelines).
