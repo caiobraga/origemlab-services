@@ -10,6 +10,7 @@ on:
       - ".github/workflows/deploy-ollama-server.yml"
       - ".github/scripts/ollama-ssm-sync-models.sh"
   workflow_dispatch: {}
+  workflow_call: {}
 
 permissions:
   id-token: write
@@ -39,6 +40,7 @@ jobs:
           STACK_NAME: ${{ vars.OLLAMA_SERVER_STACK_NAME }}
           VPC_ID: ${{ vars.VPC_ID }}
           SUBNET_ID: ${{ vars.OLLAMA_SERVER_SUBNET_ID }}
+          SUBNET_IDS: ${{ vars.SUBNET_IDS }}
           INSTANCE_TYPE: ${{ vars.OLLAMA_SERVER_INSTANCE_TYPE }}
           ROOT_VOLUME_GB: ${{ vars.OLLAMA_SERVER_ROOT_VOLUME_GB }}
           OLLAMA_CHAT_MODEL: ${{ vars.OLLAMA_CHAT_MODEL }}
@@ -48,10 +50,16 @@ jobs:
           AMI_ID: ${{ vars.OLLAMA_SERVER_AMI_ID }}
         run: |
           set -euo pipefail
-          : "${STACK_NAME:?Set repo variable OLLAMA_SERVER_STACK_NAME (ex. origemlab-ollama)}"
+          STACK_NAME="${STACK_NAME:-origemlab-ollama}"
           STACK_NAME="$(bash .github/scripts/normalize-cloudformation-stack-name.sh "${STACK_NAME}")"
           : "${VPC_ID:?Set repo variable VPC_ID}"
-          : "${SUBNET_ID:?Set repo variable OLLAMA_SERVER_SUBNET_ID (subnet pública ou com NAT)}"
+
+          if [ -z "${SUBNET_ID:-}" ] && [ -n "${SUBNET_IDS:-}" ]; then
+            SUBNET_ID="${SUBNET_IDS%%,*}"
+            SUBNET_ID="$(printf '%s' "${SUBNET_ID}" | tr -d '[:space:]')"
+            echo "OLLAMA_SERVER_SUBNET_ID not set — using first SUBNET_IDS entry: ${SUBNET_ID}"
+          fi
+          : "${SUBNET_ID:?Set OLLAMA_SERVER_SUBNET_ID (subnet pública/NAT) or SUBNET_IDS}"
 
           VPC_CIDR="$(aws ec2 describe-vpcs --vpc-ids "${VPC_ID}" --query 'Vpcs[0].CidrBlock' --output text)"
           CHAT="${OLLAMA_CHAT_MODEL:-qwen2.5:7b}"
@@ -99,7 +107,8 @@ jobs:
           OLLAMA_EMBED_MODEL: ${{ vars.OLLAMA_EMBED_MODEL }}
         run: |
           set -euo pipefail
-          STACK_NAME="$(bash .github/scripts/normalize-cloudformation-stack-name.sh "${STACK_NAME:?}")"
+          STACK_NAME="${STACK_NAME:-origemlab-ollama}"
+          STACK_NAME="$(bash .github/scripts/normalize-cloudformation-stack-name.sh "${STACK_NAME}")"
           bash .github/scripts/ollama-ssm-sync-models.sh \
             --stack-name "${STACK_NAME}" \
             --chat-model "${OLLAMA_CHAT_MODEL:-qwen2.5:7b}" \

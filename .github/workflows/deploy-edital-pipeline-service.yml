@@ -171,3 +171,19 @@ jobs:
             --parameter-overrides "${OVERRIDES[@]}"
 
           bash .github/scripts/ecs-force-rollout-after-cfn.sh "${STACK_NAME}" "${ORCH}"
+
+      - name: Run pipeline task once (scheduled mode has no ECS Service)
+        env:
+          STACK_NAME: ${{ vars.EDITAL_PIPELINE_STACK_NAME }}
+          SUBNET_IDS: ${{ vars.SUBNET_IDS }}
+          SECURITY_GROUP_IDS: ${{ vars.SECURITY_GROUP_IDS }}
+          ECS_RUN_TASK_AFTER_DEPLOY: ${{ vars.ECS_RUN_TASK_AFTER_DEPLOY }}
+        run: |
+          set -euo pipefail
+          if [ "${ECS_RUN_TASK_AFTER_DEPLOY:-true}" = "false" ]; then
+            echo "ECS_RUN_TASK_AFTER_DEPLOY=false — skip run-task."
+            exit 0
+          fi
+          STACK_NAME="${STACK_NAME:-origemlab-edital-pipeline}"
+          STACK_NAME="$(bash .github/scripts/normalize-cloudformation-stack-name.sh "${STACK_NAME}")"
+          bash .github/scripts/ecs-run-pipeline-task-once.sh "${STACK_NAME}" "${SUBNET_IDS}" "${SECURITY_GROUP_IDS}"

@@ -266,6 +266,7 @@ Resources:
     Type: AWS::Scheduler::Schedule
     Properties:
       Name: !Sub "${ProjectName}-edital-pipeline"
+      State: ENABLED
       FlexibleTimeWindow:
         Mode: "OFF"
       ScheduleExpression: !Ref ScheduleExpression

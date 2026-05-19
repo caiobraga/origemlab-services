@@ -259,6 +259,7 @@ Resources:
     Type: AWS::Scheduler::Schedule
     Properties:
       Name: !Sub "${ProjectName}-ingestion-pipeline"
+      State: ENABLED
       FlexibleTimeWindow:
         Mode: "OFF"
       ScheduleExpression: !Ref ScheduleExpression

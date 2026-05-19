@@ -16,9 +16,9 @@ Os **nomes** dos modelos (chat / embed) vêm das variáveis GitHub; o servidor s
 
 | Variável | Obrigatória | Exemplo |
 |----------|-------------|---------|
-| `OLLAMA_SERVER_STACK_NAME` | sim | `origemlab-ollama` |
+| `OLLAMA_SERVER_STACK_NAME` | não | default `origemlab-ollama` |
 | `VPC_ID` | sim | mesma VPC dos tasks ECS |
-| `OLLAMA_SERVER_SUBNET_ID` | sim | subnet com Internet (pública ou NAT) |
+| `OLLAMA_SERVER_SUBNET_ID` | não | se vazio, usa a 1ª entrada de `SUBNET_IDS` |
 | `OLLAMA_CHAT_MODEL` | não | `qwen2.5:7b` |
 | `OLLAMA_EMBED_MODEL` | não | `mxbai-embed-large:latest` |
 | `OLLAMA_BASE_URL` | sim (outros workflows) | `http://3.xx.xx.xx:11434` (output do stack) |

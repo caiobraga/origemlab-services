@@ -10,7 +10,7 @@ Serviços (Lambda) consumindo eventos do EventBridge.
 
 | Workflow | O que faz |
 |----------|-----------|
-| **`deploy-all-ecs-services.yml`** | `ingestion-pipeline` (scraper + document-processor) + `edital-pipeline` (process + validate) |
+| **`deploy-all-ecs-services.yml`** | **Ollama EC2** + `ingestion-pipeline` + `edital-pipeline` (em paralelo) |
 
 - **Push em `main`** nos paths das pipelines e código em `services/scraper-runner`, `document-processor`, `process-edital-service`, `validate-edital-service`.
 - **Manual:** Actions → *deploy-all-ecs-services* → Run workflow.
@@ -20,6 +20,8 @@ Os workflows **`deploy-scraper-runner`**, **`deploy-document-processor`**, **`de
 ECR `origemlab-ingestion-pipeline-service` e `origemlab-edital-pipeline-service` são **criados automaticamente** no primeiro deploy se ainda não existirem (papel OIDC precisa de `ecr:CreateRepository`). Alternativa única: `infrastructure/ecr-repositories.yml`.
 
 Variáveis obrigatórias: `VPC_ID`, `SUBNET_IDS`, `SECURITY_GROUP_IDS`, `OLLAMA_BASE_URL`, secrets Supabase. Stacks (opcional): `INGESTION_PIPELINE_STACK_NAME` (default `origemlab-ingestion-pipeline`), `EDITAL_PIPELINE_STACK_NAME` (default `origemlab-edital-pipeline`).
+
+**Por que o cluster mostra 0 serviços?** Com `ECS_ORCHESTRATION_MODE=scheduled` (default) **não existe ECS Service** — só **EventBridge Scheduler** (`origemlab-edital-pipeline`, `origemlab-ingestion-pipeline`) que lança **tasks** de hora em hora (ou no intervalo configurado). Entre execuções, **0 tasks** é normal. Após cada deploy, o workflow dispara **uma task imediata** (desligar: `ECS_RUN_TASK_AFTER_DEPLOY=false`). Ver tasks: ECS → cluster → aba **Tasks**; agendamento: **EventBridge → Schedules**.
 
 ## IAM: papel OIDC do GitHub Actions (`AWS_ROLE_ARN`)
 
@@ -74,7 +76,7 @@ Para um endpoint Ollama estável (`http://<Elastic-IP>:11434`) e troca de modelo
 - Workflow: `.github/workflows/deploy-ollama-server.yml`
 - Guia: [`services/ollama-server/README.md`](services/ollama-server/README.md)
 
-Variáveis mínimas: `OLLAMA_SERVER_STACK_NAME`, `VPC_ID`, `OLLAMA_SERVER_SUBNET_ID`. Depois do deploy, defina **`OLLAMA_BASE_URL`** (output `OllamaBaseUrl`) no backend e nos workflows ECS. Cada push no workflow pode fazer `ollama pull` via SSM sem mudar o IP.
+Variáveis: `VPC_ID` + `SUBNET_IDS` (mesmas do ECS) ou `OLLAMA_SERVER_SUBNET_ID` (primeira subnet pública com Internet). Stack default: `origemlab-ollama`. Incluído em **`deploy-all-ecs-services`**. Depois do deploy, copie o output **`OllamaBaseUrl`** para **`OLLAMA_BASE_URL`** no GitHub (backend + services). Workflow: `deploy-ollama-server.yml`.
 
 ## services/ingestion-pipeline-service (ECS Fargate) — **recomendado (ingestão)**
 
@@ -221,7 +223,7 @@ Local: `cd services/edital-pipeline-service && npm i && npm run start` (`.env` n
 
 Replica o comportamento do script `api:process-edital-info`, mas no **ECS Fargate**: percorre **todos** os editais (paginação Supabase), ordena por volume de chunks com texto em `documents` (RPC `process_edital_editais_com_document_chunks` — ver `sql/20260513_process_edital_editais_com_document_chunks.sql`), só chama Ollama para campos que ainda precisam de extração (`fieldNeedsExtraction`), lê `documents`/`edital_pdfs` só nesses casos e atualiza `editais`.
 
-**AWS (default no template):** `OrchestrationMode=scheduled`. Para loop 24/7 (mais caro): `ECS_ORCHESTRATION_MODE=continuous`. Preferir **edital-pipeline-service**.
+**AWS (default no template):** `OrchestrationMode=scheduled` → **0 services** no ECS; execução via Schedule + task efémera. Para um **Service** 24/7 visível no console: `ECS_ORCHESTRATION_MODE=continuous` (mais caro). Schedule default: `rate(1 hour)` (`EDITAL_PIPELINE_SCHEDULE_EXPRESSION`).
 
 ### Deploy
 
