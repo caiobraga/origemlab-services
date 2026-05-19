@@ -1,0 +1,227 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  Ollama como servico ECS Fargate 24/7 com Network Load Balancer (endpoint estavel, estilo DB).
+  Substitui a EC2 manual; clientes usam OLLAMA_BASE_URL=http://<NLB-DNS>:11434
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: origemlab
+  ClusterName:
+    Type: String
+    Default: origemlab-ollama
+  ServiceImage:
+    Type: String
+    Description: "ECR image URI (origemlab-ollama-service)"
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+  SubnetIds:
+    Type: List<AWS::EC2::Subnet::Id>
+    Description: "Subnets publicas (NLB + tasks com IP publico para pull de imagem/modelos)"
+  VpcCidrBlock:
+    Type: String
+    Description: "CIDR da VPC para acesso interno (ECS pipelines)"
+  PublicAccessCidr:
+    Type: String
+    Default: "0.0.0.0/0"
+    Description: "Quem pode aceder :11434 fora da VPC; vazio = so VPC"
+  OllamaChatModel:
+    Type: String
+    Default: "qwen2.5:7b"
+  OllamaEmbedModel:
+    Type: String
+    Default: "mxbai-embed-large:latest"
+  TaskCpu:
+    Type: String
+    Default: "4096"
+  TaskMemory:
+    Type: String
+    Default: "8192"
+  DesiredCount:
+    Type: Number
+    Default: 1
+    MinValue: 0
+    MaxValue: 2
+  NlbScheme:
+    Type: String
+    Default: internet-facing
+    AllowedValues:
+      - internet-facing
+      - internal
+
+Conditions:
+  HasPublicAccessCidr: !Not [!Equals [!Ref PublicAccessCidr, ""]]
+
+Resources:
+  OllamaSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: "origemlab ollama ECS NLB target"
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 11434
+          ToPort: 11434
+          CidrIp: !Ref VpcCidrBlock
+          Description: Ollama from VPC
+      SecurityGroupEgress:
+        - IpProtocol: "-1"
+          CidrIp: 0.0.0.0/0
+          Description: Egress all
+
+  OllamaPublicIngress:
+    Type: AWS::EC2::SecurityGroupIngress
+    Condition: HasPublicAccessCidr
+    Properties:
+      GroupId: !Ref OllamaSecurityGroup
+      IpProtocol: tcp
+      FromPort: 11434
+      ToPort: 11434
+      CidrIp: !Ref PublicAccessCidr
+      Description: Ollama from Internet
+
+  OllamaCluster:
+    Type: AWS::ECS::Cluster
+    Properties:
+      ClusterName: !Ref ClusterName
+
+  OllamaLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/${ProjectName}/ollama-service"
+      RetentionInDays: 14
+
+  OllamaTaskExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+
+  OllamaTaskRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+
+  OllamaNetworkLoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Name: !Sub "${ProjectName}-ollama-nlb"
+      Type: network
+      Scheme: !Ref NlbScheme
+      Subnets: !Ref SubnetIds
+
+  OllamaTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: !Sub "${ProjectName}-ollama-tg"
+      Port: 11434
+      Protocol: TCP
+      TargetType: ip
+      VpcId: !Ref VpcId
+      HealthCheckProtocol: HTTP
+      HealthCheckPath: /api/tags
+      HealthCheckPort: "11434"
+      HealthyThresholdCount: 2
+      UnhealthyThresholdCount: 3
+      HealthCheckIntervalSeconds: 30
+
+  OllamaListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref OllamaNetworkLoadBalancer
+      Port: 11434
+      Protocol: TCP
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref OllamaTargetGroup
+
+  OllamaTaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: !Sub "${ProjectName}-ollama-service"
+      Cpu: !Ref TaskCpu
+      Memory: !Ref TaskMemory
+      NetworkMode: awsvpc
+      RequiresCompatibilities:
+        - FARGATE
+      ExecutionRoleArn: !GetAtt OllamaTaskExecutionRole.Arn
+      TaskRoleArn: !GetAtt OllamaTaskRole.Arn
+      ContainerDefinitions:
+        - Name: ollama
+          Image: !Ref ServiceImage
+          Essential: true
+          PortMappings:
+            - ContainerPort: 11434
+              Protocol: tcp
+          Environment:
+            - Name: OLLAMA_HOST
+              Value: "0.0.0.0:11434"
+            - Name: OLLAMA_CHAT_MODEL
+              Value: !Ref OllamaChatModel
+            - Name: OLLAMA_EMBED_MODEL
+              Value: !Ref OllamaEmbedModel
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref OllamaLogGroup
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: ollama
+
+  OllamaService:
+    Type: AWS::ECS::Service
+    DependsOn: OllamaListener
+    Properties:
+      ServiceName: !Sub "${ProjectName}-ollama"
+      Cluster: !Ref OllamaCluster
+      TaskDefinition: !Ref OllamaTaskDefinition
+      DesiredCount: !Ref DesiredCount
+      LaunchType: FARGATE
+      PlatformVersion: LATEST
+      HealthCheckGracePeriodSeconds: 300
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssignPublicIp: ENABLED
+          Subnets: !Ref SubnetIds
+          SecurityGroups:
+            - !Ref OllamaSecurityGroup
+      LoadBalancers:
+        - ContainerName: ollama
+          ContainerPort: 11434
+          TargetGroupArn: !Ref OllamaTargetGroup
+      DeploymentConfiguration:
+        MaximumPercent: 100
+        MinimumHealthyPercent: 0
+        DeploymentCircuitBreaker:
+          Enable: true
+          Rollback: true
+
+Outputs:
+  OllamaBaseUrl:
+    Description: "Defina OLLAMA_BASE_URL no GitHub, backend e .env"
+    Value: !Sub "http://${OllamaNetworkLoadBalancer.DNSName}:11434"
+    Export:
+      Name: !Sub "${AWS::StackName}-OllamaBaseUrl"
+  OllamaNlbDnsName:
+    Value: !GetAtt OllamaNetworkLoadBalancer.DNSName
+  EcsClusterName:
+    Value: !Ref OllamaCluster
+  OllamaServiceName:
+    Value: !GetAtt OllamaService.Name
+  WorkerServiceName:
+    Description: "Alias para ecs-force-rollout-after-cfn.sh"
+    Value: !GetAtt OllamaService.Name
+  SecurityGroupId:
+    Value: !Ref OllamaSecurityGroup

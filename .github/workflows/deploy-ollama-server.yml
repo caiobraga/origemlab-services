@@ -1,16 +1,8 @@
-# EC2 + Elastic IP + Ollama (modelos configuráveis via variáveis GitHub).
-# Depois do primeiro deploy, defina OLLAMA_BASE_URL=http://<ElasticIP>:11434 em backend e services.
+# LEGADO: EC2 + Elastic IP. Preferir deploy-ollama-service.yml (ECS + NLB).
 name: deploy-ollama-server
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - "infrastructure/ec2-ollama-server.yml"
-      - ".github/workflows/deploy-ollama-server.yml"
-      - ".github/scripts/ollama-ssm-sync-models.sh"
   workflow_dispatch: {}
-  workflow_call: {}
 
 permissions:
   id-token: write

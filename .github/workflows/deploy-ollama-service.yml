@@ -1,0 +1,123 @@
+# Ollama em ECS Fargate + NLB (endpoint estavel 24/7). Recomendado em vez da EC2.
+name: deploy-ollama-service
+
+on:
+  workflow_dispatch: {}
+  workflow_call: {}
+  push:
+    branches: [main]
+    paths:
+      - "services/ollama-service/**"
+      - "infrastructure/ecs-ollama-service.yml"
+      - ".github/workflows/deploy-ollama-service.yml"
+
+permissions:
+  id-token: write
+  contents: read
+
+concurrency:
+  group: ollama-service-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  AWS_REGION: ${{ vars.AWS_REGION }}
+
+jobs:
+  docker-ecr-and-stack:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: ${{ env.AWS_REGION }}
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+
+      - name: Ensure ECR repository exists
+        run: bash .github/scripts/ensure-ecr-repository.sh origemlab-ollama-service
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and push image
+        env:
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          REGISTRY="${{ steps.login-ecr.outputs.registry }}"
+          IMAGE="${REGISTRY}/origemlab-ollama-service"
+          docker build -f services/ollama-service/Dockerfile -t "${IMAGE}:${IMAGE_TAG}" -t "${IMAGE}:latest" .
+          docker push "${IMAGE}:${IMAGE_TAG}"
+          docker push "${IMAGE}:latest"
+          echo "IMAGE_URI=${IMAGE}:${IMAGE_TAG}" >> "$GITHUB_ENV"
+
+      - name: Deploy ECS Ollama stack (CloudFormation)
+        env:
+          STACK_NAME: ${{ vars.OLLAMA_SERVICE_STACK_NAME }}
+          VPC_ID: ${{ vars.VPC_ID }}
+          SUBNET_IDS: ${{ vars.SUBNET_IDS }}
+          OLLAMA_CHAT_MODEL: ${{ vars.OLLAMA_CHAT_MODEL }}
+          OLLAMA_EMBED_MODEL: ${{ vars.OLLAMA_EMBED_MODEL }}
+          PUBLIC_ACCESS_CIDR: ${{ vars.OLLAMA_SERVER_PUBLIC_ACCESS_CIDR }}
+          CLUSTER_NAME: ${{ vars.OLLAMA_SERVICE_CLUSTER_NAME }}
+          TASK_CPU: ${{ vars.OLLAMA_SERVICE_TASK_CPU }}
+          TASK_MEMORY: ${{ vars.OLLAMA_SERVICE_TASK_MEMORY }}
+          NLB_SCHEME: ${{ vars.OLLAMA_SERVICE_NLB_SCHEME }}
+        run: |
+          set -euo pipefail
+          STACK_NAME="${STACK_NAME:-origemlab-ollama-service}"
+          STACK_NAME="$(bash .github/scripts/normalize-cloudformation-stack-name.sh "${STACK_NAME}")"
+          : "${VPC_ID:?Set repo variable VPC_ID}"
+          : "${SUBNET_IDS:?Set repo variable SUBNET_IDS}"
+          : "${IMAGE_URI:?IMAGE_URI missing}"
+
+          escape_cf_list() { printf '%s' "$1" | sed 's/,/\\,/g'; }
+          SUBNET_IDS_CF=$(escape_cf_list "${SUBNET_IDS}")
+
+          VPC_CIDR="$(aws ec2 describe-vpcs --vpc-ids "${VPC_ID}" --query 'Vpcs[0].CidrBlock' --output text)"
+          CHAT="${OLLAMA_CHAT_MODEL:-qwen2.5:7b}"
+          EMBED="${OLLAMA_EMBED_MODEL:-mxbai-embed-large:latest}"
+          PUBLIC_CIDR="$(printf '%s' "${PUBLIC_ACCESS_CIDR:-0.0.0.0/0}" | tr -d '[:space:]')"
+          CLUSTER="${CLUSTER_NAME:-origemlab-ollama}"
+          CPU="${TASK_CPU:-4096}"
+          MEM="${TASK_MEMORY:-8192}"
+          SCHEME="${NLB_SCHEME:-internet-facing}"
+
+          bash .github/scripts/cfn-delete-failed-stack.sh "${STACK_NAME}"
+
+          OVERRIDES=(
+            "ServiceImage=${IMAGE_URI}"
+            "VpcId=${VPC_ID}"
+            "SubnetIds=${SUBNET_IDS_CF}"
+            "VpcCidrBlock=${VPC_CIDR}"
+            "OllamaChatModel=${CHAT}"
+            "OllamaEmbedModel=${EMBED}"
+            "ClusterName=${CLUSTER}"
+            "TaskCpu=${CPU}"
+            "TaskMemory=${MEM}"
+            "NlbScheme=${SCHEME}"
+          )
+          [ -n "${PUBLIC_CIDR}" ] && OVERRIDES+=("PublicAccessCidr=${PUBLIC_CIDR}")
+
+          if ! aws cloudformation deploy \
+            --stack-name "${STACK_NAME}" \
+            --template-file infrastructure/ecs-ollama-service.yml \
+            --capabilities CAPABILITY_IAM \
+            --parameter-overrides "${OVERRIDES[@]}" \
+            --no-fail-on-empty-changeset; then
+            echo "=== CloudFormation failure: ${STACK_NAME} ==="
+            aws cloudformation describe-stack-events \
+              --stack-name "${STACK_NAME}" \
+              --max-items 40 \
+              --query 'StackEvents[?contains(ResourceStatus, `FAILED`) || contains(ResourceStatus, `ROLLBACK`)].[LogicalResourceId,ResourceType,ResourceStatus,ResourceStatusReason]' \
+              --output table || true
+            exit 1
+          fi
+
+          OLLAMA_URL="$(aws cloudformation describe-stacks --stack-name "${STACK_NAME}" \
+            --query "Stacks[0].Outputs[?OutputKey=='OllamaBaseUrl'].OutputValue" --output text)"
+          echo "OLLAMA_BASE_URL=${OLLAMA_URL}"
+          echo "::notice::Defina OLLAMA_BASE_URL=${OLLAMA_URL} no GitHub (backend + services). Pode desligar a EC2/stack origemlab-ollama antiga."
+
+          bash .github/scripts/ecs-force-rollout-after-cfn.sh "${STACK_NAME}" "continuous"

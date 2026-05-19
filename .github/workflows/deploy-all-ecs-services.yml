@@ -1,4 +1,4 @@
-# Entrypoint AWS: Ollama EC2 + ingestion-pipeline + edital-pipeline (paralelo).
+# Entrypoint AWS: Ollama ECS (NLB) + ingestion-pipeline + edital-pipeline (paralelo).
 # Stacks legados ECS separados: só workflow_dispatch manual.
 # SAM/Lambda: deploy.yml
 name: deploy-all-ecs-services
@@ -16,8 +16,9 @@ on:
       - "services/validate-edital-service/**"
       - "infrastructure/ecs-ingestion-pipeline-service.yml"
       - "infrastructure/ecs-edital-pipeline-service.yml"
-      - "infrastructure/ec2-ollama-server.yml"
-      - ".github/workflows/deploy-ollama-server.yml"
+      - "services/ollama-service/**"
+      - "infrastructure/ecs-ollama-service.yml"
+      - ".github/workflows/deploy-ollama-service.yml"
       - ".github/workflows/deploy-all-ecs-services.yml"
       - ".github/workflows/deploy-ingestion-pipeline-service.yml"
       - ".github/workflows/deploy-edital-pipeline-service.yml"
@@ -29,8 +30,8 @@ permissions:
   id-token: write
 
 jobs:
-  ollama-server:
-    uses: ./.github/workflows/deploy-ollama-server.yml
+  ollama-service:
+    uses: ./.github/workflows/deploy-ollama-service.yml
     secrets: inherit
 
   ingestion-pipeline-service:

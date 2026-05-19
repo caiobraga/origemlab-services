@@ -10,7 +10,7 @@ Serviços (Lambda) consumindo eventos do EventBridge.
 
 | Workflow | O que faz |
 |----------|-----------|
-| **`deploy-all-ecs-services.yml`** | **Ollama EC2** + `ingestion-pipeline` + `edital-pipeline` (em paralelo) |
+| **`deploy-all-ecs-services.yml`** | **Ollama ECS (NLB)** + `ingestion-pipeline` + `edital-pipeline` (em paralelo) |
 
 - **Push em `main`** nos paths das pipelines e código em `services/scraper-runner`, `document-processor`, `process-edital-service`, `validate-edital-service`.
 - **Manual:** Actions → *deploy-all-ecs-services* → Run workflow.
@@ -68,15 +68,17 @@ Para stacks com `OrchestrationMode=scheduled`, o EventBridge Scheduler também p
 
 Após cada deploy CloudFormation bem-sucedido dos workers ECS (`continuous`), os workflows chamam `.github/scripts/ecs-force-rollout-after-cfn.sh`, que executa `ecs:UpdateService` com `--force-new-deployment` para substituir tasks antigas pela nova task definition (imagem + env). Sem isso, uma task pode continuar dias com código/modelo antigos mesmo após push no ECR.
 
-## Ollama em EC2 (IP fixo) — **recomendado para IA**
+## Ollama como serviço ECS (NLB) — **recomendado para IA**
 
-Para um endpoint Ollama estável (`http://<Elastic-IP>:11434`) e troca de modelos só pelas variáveis GitHub (`OLLAMA_CHAT_MODEL`, `OLLAMA_EMBED_MODEL`, `OLLAMA_MODEL`):
+Endpoint estável 24/7 (`http://<NLB-DNS>:11434`), como um serviço de dados — sem EC2/SSH/EIP.
 
-- Stack: `infrastructure/ec2-ollama-server.yml`
-- Workflow: `.github/workflows/deploy-ollama-server.yml`
-- Guia: [`services/ollama-server/README.md`](services/ollama-server/README.md)
+- Stack: `infrastructure/ecs-ollama-service.yml`
+- Workflow: `.github/workflows/deploy-ollama-service.yml`
+- Guia: [`services/ollama-service/README.md`](services/ollama-service/README.md)
 
-Variáveis: `VPC_ID` + `SUBNET_IDS` (mesmas do ECS) ou `OLLAMA_SERVER_SUBNET_ID` (primeira subnet pública com Internet). Stack default: `origemlab-ollama`. Incluído em **`deploy-all-ecs-services`**. Depois do deploy, copie o output **`OllamaBaseUrl`** para **`OLLAMA_BASE_URL`** no GitHub (backend + services). Workflow: `deploy-ollama-server.yml`.
+Usa as mesmas `VPC_ID` e `SUBNET_IDS` dos pipelines. Stack default: `origemlab-ollama-service`. Incluído em **`deploy-all-ecs-services`**. Depois do deploy, copie o output **`OllamaBaseUrl`** para **`OLLAMA_BASE_URL`** no GitHub (backend + services).
+
+EC2 legado: [`services/ollama-server/README.md`](services/ollama-server/README.md) (`deploy-ollama-server.yml`, só manual).
 
 ## services/ingestion-pipeline-service (ECS Fargate) — **recomendado (ingestão)**
 
