@@ -34,13 +34,13 @@ Parameters:
     Description: "Base URL do Ollama (ex.: http://host:11434)"
   OllamaModel:
     Type: String
-    Default: "qwen2.5:7b"
+    Default: "gemma2:2b"
   OllamaTimeoutMs:
     Type: Number
     Default: 240000
   OllamaMaxContextChars:
     Type: Number
-    Default: 22000
+    Default: 10000
   ValidateEditaisLimit:
     Type: Number
     Default: 0

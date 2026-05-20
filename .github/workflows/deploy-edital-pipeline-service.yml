@@ -132,8 +132,12 @@ jobs:
           _proc_ollama="$(printf '%s' "${PROCESS_EDITAL_OLLAMA_MODEL:-}" | tr -d '\r' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
           _shared_ollama="$(printf '%s' "${OLLAMA_MODEL:-}" | tr -d '\r' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
           _ollama_effective="${_proc_ollama:-${_shared_ollama}}"
-          _ollama_effective="${_ollama_effective:-qwen2.5:7b}"
+          _ollama_effective="${_ollama_effective:-gemma2:2b}"
           OVERRIDES+=("OllamaModel=${_ollama_effective}")
+
+          _ctx_chars="$(printf '%s' "${OLLAMA_MAX_CONTEXT_CHARS:-10000}" | tr -d '\r' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+          [[ "${_ctx_chars}" =~ ^[0-9]+$ ]] || _ctx_chars=10000
+          OVERRIDES+=("OllamaMaxContextChars=${_ctx_chars}")
 
           _timeout_eff="$(printf '%s' "${OLLAMA_TIMEOUT_MS:-600000}" | tr -d '\r' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
           [[ "${_timeout_eff}" =~ ^[0-9]+$ ]] || _timeout_eff=600000
@@ -153,7 +157,6 @@ jobs:
           [[ "${_emb_eff}" =~ ^[0-9]+$ ]] || _emb_eff=180000
           OVERRIDES+=("OllamaEmbedTimeoutMs=${_emb_eff}")
 
-          [ -n "${OLLAMA_MAX_CONTEXT_CHARS:-}" ] && OVERRIDES+=("OllamaMaxContextChars=${OLLAMA_MAX_CONTEXT_CHARS}")
           [ -n "${PROCESS_EDITAL_LIMIT:-}" ] && OVERRIDES+=("ProcessEditalLimit=${PROCESS_EDITAL_LIMIT}")
           [ -n "${DELAY_BETWEEN_EDITAIS_MS:-}" ] && OVERRIDES+=("DelayBetweenEditaisMs=${DELAY_BETWEEN_EDITAIS_MS}")
           [ -n "${PROCESS_EDITAL_CONCURRENCY:-}" ] && OVERRIDES+=("ProcessEditalConcurrency=${PROCESS_EDITAL_CONCURRENCY}")

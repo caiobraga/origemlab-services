@@ -36,7 +36,7 @@ Parameters:
     Default: ""
   OllamaChatModel:
     Type: String
-    Default: "qwen2.5:7b"
+    Default: "gemma2:2b"
   OllamaEmbedModel:
     Type: String
     Default: "mxbai-embed-large:latest"

@@ -26,7 +26,7 @@ Se não puder alterar IAM: abra manualmente no console **EC2 → Security Groups
 | `SUBNET_IDS` | sim | subnets **públicas** (tasks com IP público para pull de imagem/modelos) |
 | `SECURITY_GROUP_IDS` | sim | mesmo das pipelines; o stack abre **11434** no primeiro SG da lista |
 | `OLLAMA_BASE_URL` | sim (outros serviços) | output `OllamaBaseUrl` após deploy |
-| `OLLAMA_CHAT_MODEL` | não | `qwen2.5:7b` |
+| `OLLAMA_CHAT_MODEL` | não | `gemma2:2b` |
 | `OLLAMA_EMBED_MODEL` | não | `mxbai-embed-large:latest` |
 | `OLLAMA_SERVICE_STACK_NAME` | não | `origemlab-ollama-service` |
 | `OLLAMA_SERVER_PUBLIC_ACCESS_CIDR` | não | `0.0.0.0/0` (reutilizada para SG da porta 11434) |

@@ -13,7 +13,7 @@ for i in $(seq 1 60); do
   sleep 2
 done
 
-CHAT="${OLLAMA_CHAT_MODEL:-qwen2.5:7b}"
+CHAT="${OLLAMA_CHAT_MODEL:-gemma2:2b}"
 EMBED="${OLLAMA_EMBED_MODEL:-mxbai-embed-large:latest}"
 
 if [ -n "${CHAT}" ]; then

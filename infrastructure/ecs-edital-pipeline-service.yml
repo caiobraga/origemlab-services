@@ -36,7 +36,7 @@ Parameters:
     Type: String
   OllamaModel:
     Type: String
-    Default: "qwen2.5:7b"
+    Default: "gemma2:2b"
   OllamaEmbedModel:
     Type: String
     Default: "mxbai-embed-large:latest"
@@ -51,7 +51,7 @@ Parameters:
     Default: 180000
   OllamaMaxContextChars:
     Type: Number
-    Default: 22000
+    Default: 10000
   ProcessEditalLimit:
     Type: Number
     Default: 0

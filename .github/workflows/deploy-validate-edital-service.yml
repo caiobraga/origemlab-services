@@ -140,7 +140,7 @@ jobs:
           _val_ollama="$(printf '%s' "${VALIDATE_EDITAL_OLLAMA_MODEL:-}" | tr -d '\r' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
           _shared_ollama="$(printf '%s' "${OLLAMA_MODEL:-}" | tr -d '\r' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
           _ollama_effective="${_val_ollama:-${_shared_ollama}}"
-          _ollama_effective="${_ollama_effective:-qwen2.5:7b}"
+          _ollama_effective="${_ollama_effective:-gemma2:2b}"
           OVERRIDES+=("OllamaModel=${_ollama_effective}")
           echo "CloudFormation parameter OllamaModel=${_ollama_effective} (VALIDATE_EDITAL_OLLAMA_MODEL > OLLAMA_MODEL > default)"
 

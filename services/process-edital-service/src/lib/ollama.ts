@@ -71,8 +71,8 @@ function wrapOllamaFetchError(err: unknown, timeoutMs: number, label: string, ba
 }
 
 export function getMaxContextChars(): number {
-  const n = parseInt(process.env.OLLAMA_MAX_CONTEXT_CHARS || "22000", 10);
-  return Number.isFinite(n) ? Math.max(2000, n) : 22000;
+  const n = parseInt(process.env.OLLAMA_MAX_CONTEXT_CHARS || "10000", 10);
+  return Number.isFinite(n) ? Math.max(2000, n) : 10_000;
 }
 
 async function ollamaGenerateOnce(prompt: string, baseUrl: string, model: string, timeoutMs: number): Promise<string> {
