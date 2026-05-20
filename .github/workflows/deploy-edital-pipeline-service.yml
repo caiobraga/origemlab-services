@@ -1,5 +1,5 @@
 # ECS deploy: edital-pipeline (process-edital + validate-edital num único container).
-# Substitui os dois workers contínuos separados — use ECS_ORCHESTRATION_MODE=scheduled (default).
+# Edital pipeline: default continuous (1 ECS Service). Agendado: EDITAL_PIPELINE_ORCHESTRATION_MODE=scheduled
 #
 # Required repo variables:
 #   EDITAL_PIPELINE_STACK_NAME   optional (default origemlab-edital-pipeline)
@@ -8,7 +8,7 @@
 # Optional:
 #   EDITAL_PIPELINE_SCHEDULE_EXPRESSION (default rate(1 hour))
 #   EDITAL_PIPELINE_CLUSTER_NAME (default origemlab-edital-pipeline)
-#   ECS_ORCHESTRATION_MODE (default scheduled)
+#   EDITAL_PIPELINE_ORCHESTRATION_MODE (default continuous; scheduled para só EventBridge)
 #   EVENT_BUS_NAME, OLLAMA_MODEL, PROCESS_EDITAL_*, VALIDATE_*, etc. (mesmas dos stacks antigos)
 name: deploy-edital-pipeline-service
 
@@ -86,7 +86,7 @@ jobs:
           API_REQUEST_DELAY_MS: ${{ vars.VALIDATE_API_REQUEST_DELAY_MS }}
           VALIDATE_EDITAL_CONCURRENCY: ${{ vars.VALIDATE_EDITAL_CONCURRENCY }}
           VALIDATE_FIELD_CONCURRENCY: ${{ vars.VALIDATE_FIELD_CONCURRENCY }}
-          ECS_ORCHESTRATION_MODE: ${{ vars.ECS_ORCHESTRATION_MODE }}
+          EDITAL_PIPELINE_ORCHESTRATION_MODE: ${{ vars.EDITAL_PIPELINE_ORCHESTRATION_MODE }}
           WORKER_IDLE_MS_AFTER_WORK: ${{ vars.WORKER_IDLE_MS_AFTER_WORK }}
           WORKER_IDLE_MS_NO_WORK: ${{ vars.WORKER_IDLE_MS_NO_WORK }}
           EVENT_BUS_NAME: ${{ vars.EVENT_BUS_NAME }}
@@ -109,7 +109,7 @@ jobs:
 
           SCHED="${SCHEDULE_EXPRESSION:-rate(1 hour)}"
           CLUSTER="${CLUSTER_NAME:-origemlab-edital-pipeline}"
-          ORCH="${ECS_ORCHESTRATION_MODE:-scheduled}"
+          ORCH="${EDITAL_PIPELINE_ORCHESTRATION_MODE:-continuous}"
           EB="${EVENT_BUS_NAME:-default}"
 
           OVERRIDES=(

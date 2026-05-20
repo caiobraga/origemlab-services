@@ -212,14 +212,14 @@ Um único container executa em sequência **process-edital-info** → **validate
 | `VPC_ID`, `SUBNET_IDS`, `SECURITY_GROUP_IDS` | Rede (partilhadas com outros serviços) |
 | Secrets | `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY` |
 | `OLLAMA_BASE_URL` | Ollama |
-| `EDITAL_PIPELINE_SCHEDULE_EXPRESSION` | Opcional (default `rate(1 hour)`) |
-| `ECS_ORCHESTRATION_MODE` | Opcional (default **`scheduled`**) |
+| `EDITAL_PIPELINE_SCHEDULE_EXPRESSION` | Só com `scheduled` (default `rate(1 hour)`) |
+| `EDITAL_PIPELINE_ORCHESTRATION_MODE` | Opcional (default **`continuous`**) |
 
 Variáveis de process/validate (`PROCESS_EDITAL_*`, `VALIDATE_*`, `OLLAMA_MODEL`, etc.) aplicam-se ao mesmo task definition.
 
 ### Migrar dos stacks antigos
 
-1. Deploy do pipeline com `EDITAL_PIPELINE_STACK_NAME` e `ECS_ORCHESTRATION_MODE=scheduled`.
+1. Deploy do pipeline com `EDITAL_PIPELINE_STACK_NAME` (default **continuous**).
 2. Nos stacks **process-edital** e **validate-edital** antigos: atualizar com `ECS_ORCHESTRATION_MODE=scheduled` **ou** apagar os ECS Services / stacks para parar cobrança 24/7.
 3. `deploy-all-ecs-services` já só dispara o pipeline (os deploys separados ficam comentados).
 

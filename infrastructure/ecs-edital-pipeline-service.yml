@@ -1,7 +1,7 @@
 AWSTemplateFormatVersion: "2010-09-09"
 Description: >
   origemlab edital-pipeline on ECS Fargate — process-edital-info + validate-editais-corretos
-  num único container. Default scheduled (sem worker 24/7) para reduzir custo.
+  num único container. Default continuous (1 ECS Service 24/7 com loop no container).
 
 Parameters:
   ProjectName:
@@ -84,11 +84,11 @@ Parameters:
     Default: 0
   OrchestrationMode:
     Type: String
-    Default: scheduled
+    Default: continuous
     AllowedValues:
       - continuous
       - scheduled
-    Description: "scheduled = só EventBridge (recomendado); continuous = 1 ECS Service 24/7"
+    Description: "continuous = 1 ECS Service 24/7; scheduled = só EventBridge Scheduler"
   WorkerIdleMsAfterWork:
     Type: Number
     Default: 8000
