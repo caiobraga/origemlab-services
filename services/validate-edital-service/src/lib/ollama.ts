@@ -1,3 +1,5 @@
+import { ollamaFetch } from "./ollamaHttp";
+
 type OllamaGenerateResponse = {
   response?: string;
 };
@@ -25,9 +27,29 @@ export function getOllamaEmbedModel(): string {
   return getOllamaModel();
 }
 
+function clampTimeoutMs(n: number, fallback: number): number {
+  if (!Number.isFinite(n)) return fallback;
+  return Math.min(Math.max(n, 10_000), 1_800_000);
+}
+
 export function getOllamaTimeoutMs(): number {
-  const n = parseInt(process.env.OLLAMA_TIMEOUT_MS || "240000", 10);
-  return Number.isFinite(n) ? Math.max(10_000, n) : 240_000;
+  const raw = parseInt(process.env.OLLAMA_TIMEOUT_MS || "600000", 10);
+  return clampTimeoutMs(raw, 600_000);
+}
+
+function getOllamaGenerateTimeoutMs(): number {
+  const raw = String(process.env.OLLAMA_GENERATE_TIMEOUT_MS || "").trim();
+  if (raw) {
+    const g = parseInt(raw, 10);
+    if (Number.isFinite(g) && g > 0) return clampTimeoutMs(g, 900_000);
+  }
+  return clampTimeoutMs(900_000, 900_000);
+}
+
+function getOllamaEmbedTimeoutMs(): number {
+  const e = parseInt(process.env.OLLAMA_EMBED_TIMEOUT_MS || "", 10);
+  if (Number.isFinite(e) && e > 0) return clampTimeoutMs(e, getOllamaTimeoutMs());
+  return getOllamaTimeoutMs();
 }
 
 export function getMaxContextChars(): number {
@@ -38,23 +60,27 @@ export function getMaxContextChars(): number {
 export async function ollamaGenerate(prompt: string): Promise<string> {
   const baseUrl = getOllamaBaseUrl();
   const model = getOllamaModel();
-  const timeoutMs = getOllamaTimeoutMs();
+  const timeoutMs = getOllamaGenerateTimeoutMs();
   const temperature = parseFloat(process.env.OLLAMA_TEMPERATURE || "0");
 
   const controller = new AbortController();
   const t = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const res = await fetch(`${baseUrl}/api/generate`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        model,
-        prompt,
-        stream: false,
-        options: { temperature: Number.isFinite(temperature) ? temperature : 0 },
-      }),
-      signal: controller.signal,
-    });
+    const res = await ollamaFetch(
+      `${baseUrl}/api/generate`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          model,
+          prompt,
+          stream: false,
+          options: { temperature: Number.isFinite(temperature) ? temperature : 0 },
+        }),
+        signal: controller.signal,
+      },
+      timeoutMs,
+    );
 
     const text = await res.text();
     if (!res.ok) throw new Error(`Ollama error ${res.status}: ${text.slice(0, 800)}`);
@@ -68,7 +94,7 @@ export async function ollamaGenerate(prompt: string): Promise<string> {
 export async function ollamaEmbed(input: string): Promise<number[]> {
   const baseUrl = getOllamaBaseUrl();
   const model = getOllamaEmbedModel();
-  const timeoutMs = getOllamaTimeoutMs();
+  const timeoutMs = getOllamaEmbedTimeoutMs();
   const dimensionsRaw = (process.env.EMBED_DIMENSIONS || process.env.OLLAMA_EMBED_DIMENSIONS || "").trim();
   const dimensions = dimensionsRaw ? parseInt(dimensionsRaw, 10) : null;
 
@@ -78,12 +104,16 @@ export async function ollamaEmbed(input: string): Promise<number[]> {
     const body: Record<string, unknown> = { model, input };
     if (dimensions && Number.isFinite(dimensions) && dimensions > 0) body.dimensions = dimensions;
 
-    const res = await fetch(`${baseUrl}/api/embed`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(body),
-      signal: controller.signal,
-    });
+    const res = await ollamaFetch(
+      `${baseUrl}/api/embed`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+        signal: controller.signal,
+      },
+      timeoutMs,
+    );
 
     const text = await res.text();
     if (!res.ok) {

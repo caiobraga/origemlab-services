@@ -28,6 +28,8 @@ Opcional: `PIPELINE_SKIP_PROCESS=1` ou `PIPELINE_SKIP_VALIDATE=1` para correr s�
 
 **Default (AWS):** `OrchestrationMode=continuous` — cluster `origemlab-edital-pipeline` com **1 serviço** (`origemlab-edital-pipeline-worker`), `ECS_WORKER_LOOP=1`.
 
+**Ollama lento / `UND_ERR_HEADERS_TIMEOUT`:** o NLB + Fargate Ollama aguenta poucas chamadas `/api/generate` em paralelo. No GitHub: `OLLAMA_GENERATE_TIMEOUT_MS=900000` (ou mais); opcional `PROCESS_EDITAL_CONCURRENCY=1` e `PROCESS_EDITAL_FIELD_CONCURRENCY=1` para fila menor. Redeploy do pipeline após alterar timeouts no código.
+
 Para só agendar (0 services entre runs): `EDITAL_PIPELINE_ORCHESTRATION_MODE=scheduled` no GitHub + `EDITAL_PIPELINE_SCHEDULE_EXPRESSION` (ex. `rate(30 minutes)`).
 
 Após migrar, **escala para 0** ou remove os stacks antigos `process-edital` e `validate-edital`.

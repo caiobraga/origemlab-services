@@ -25,7 +25,7 @@ export function describeFetchError(err: unknown): string {
 export function isTransientFetchError(err: unknown): boolean {
   if (err instanceof Error && err.name === "AbortError") return false;
   const msg = describeFetchError(err).toLowerCase();
-  return /fetch failed|econnreset|econnrefused|etimedout|enotfound|socket hang up|network|und_err_connect_timeout/i.test(
+  return /fetch failed|econnreset|econnrefused|etimedout|enotfound|socket hang up|network|und_err_connect_timeout|und_err_headers_timeout|headerstimeouterror/i.test(
     msg,
   );
 }

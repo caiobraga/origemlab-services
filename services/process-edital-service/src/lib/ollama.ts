@@ -1,4 +1,5 @@
 import { describeFetchError } from "./fetchError";
+import { ollamaFetch } from "./ollamaHttp";
 import { withRetry } from "./retry";
 
 type OllamaGenerateResponse = {
@@ -79,7 +80,7 @@ async function ollamaGenerateOnce(prompt: string, baseUrl: string, model: string
   const controller = new AbortController();
   const t = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const res = await fetch(`${baseUrl}/api/generate`, {
+    const res = await ollamaFetch(`${baseUrl}/api/generate`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
@@ -89,7 +90,7 @@ async function ollamaGenerateOnce(prompt: string, baseUrl: string, model: string
         options: { temperature: Number.isFinite(temperature) ? temperature : 0 },
       }),
       signal: controller.signal,
-    });
+    }, timeoutMs);
 
     const text = await res.text();
     if (!res.ok) {
@@ -124,12 +125,12 @@ async function ollamaEmbedOnce(input: string, baseUrl: string, model: string, ti
     const body: Record<string, unknown> = { model, input };
     if (dimensions && Number.isFinite(dimensions) && dimensions > 0) body.dimensions = dimensions;
 
-    const res = await fetch(`${baseUrl}/api/embed`, {
+    const res = await ollamaFetch(`${baseUrl}/api/embed`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(body),
       signal: controller.signal,
-    });
+    }, timeoutMs);
 
     const text = await res.text();
     if (!res.ok) {
