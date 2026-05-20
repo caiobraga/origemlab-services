@@ -39,7 +39,7 @@ Parameters:
     Default: "gemma2:2b"
   OllamaEmbedModel:
     Type: String
-    Default: "mxbai-embed-large:latest"
+    Default: "mxbai-embed-large"
   OllamaTimeoutMs:
     Type: Number
     Default: 600000

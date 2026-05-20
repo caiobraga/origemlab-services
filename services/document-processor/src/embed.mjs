@@ -30,7 +30,7 @@ async function embedWithOllama(texts) {
   const base = ollamaBaseUrl();
   const url = `${base}/api/embed`;
   const input = texts.length === 1 ? texts[0] : texts;
-  const model = process.env.OLLAMA_EMBED_MODEL || "mxbai-embed-large:latest";
+  const model = process.env.OLLAMA_EMBED_MODEL || "mxbai-embed-large";
   const body = { model, input };
   const dim = embedDimensions();
   if (dim != null && dim > 0) body.dimensions = dim;

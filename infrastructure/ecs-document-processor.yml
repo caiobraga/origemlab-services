@@ -41,7 +41,7 @@ Parameters:
     Default: "gemma2:2b"
   OllamaEmbedModel:
     Type: String
-    Default: "mxbai-embed-large:latest"
+    Default: "mxbai-embed-large"
   OrchestrationMode:
     Type: String
     Default: scheduled

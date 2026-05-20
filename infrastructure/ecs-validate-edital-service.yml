@@ -64,7 +64,7 @@ Parameters:
     Description: "Campos auditados em paralelo por edital"
   OllamaEmbedModel:
     Type: String
-    Default: "mxbai-embed-large:latest"
+    Default: "mxbai-embed-large"
   ValidateForceRevalidate:
     Type: Number
     Default: 0

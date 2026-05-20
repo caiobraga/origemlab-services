@@ -14,16 +14,44 @@ for i in $(seq 1 60); do
 done
 
 CHAT="${OLLAMA_CHAT_MODEL:-gemma2:2b}"
-EMBED="${OLLAMA_EMBED_MODEL:-mxbai-embed-large:latest}"
+EMBED="${OLLAMA_EMBED_MODEL:-mxbai-embed-large}"
 
-if [ -n "${CHAT}" ]; then
-  echo "Pulling chat model: ${CHAT}"
-  ollama pull "${CHAT}" || true
+# Ollama pull usa nome sem :latest; a API aceita com ou sem tag.
+chat_pull="${CHAT%%:latest}"
+embed_pull="${EMBED%%:latest}"
+
+model_listed() {
+  base="$1"
+  curl -sf "http://127.0.0.1:11434/api/tags" | grep -q "\"name\":\"${base}"
+}
+
+pull_required() {
+  name="$1"
+  attempt=1
+  while [ "${attempt}" -le 3 ]; do
+    echo "Pulling ${name} (attempt ${attempt}/3)..."
+    if ollama pull "${name}"; then
+      if model_listed "${name}"; then
+        echo "Model ready: ${name}"
+        return 0
+      fi
+      echo "WARN: pull ${name} ok but not in /api/tags yet"
+    else
+      echo "WARN: ollama pull ${name} failed (attempt ${attempt})"
+    fi
+    attempt=$((attempt + 1))
+    sleep 15
+  done
+  echo "ERROR: required model ${name} not available after 3 pull attempts"
+  return 1
+}
+
+if [ -n "${chat_pull}" ]; then
+  pull_required "${chat_pull}" || exit 1
 fi
-if [ -n "${EMBED}" ] && [ "${EMBED}" != "${CHAT}" ]; then
-  echo "Pulling embed model: ${EMBED}"
-  ollama pull "${EMBED}" || true
+if [ -n "${embed_pull}" ] && [ "${embed_pull}" != "${chat_pull}" ]; then
+  pull_required "${embed_pull}" || exit 1
 fi
 
-echo "Ollama ready"
+echo "Ollama ready — chat=${chat_pull} embed=${embed_pull}"
 wait "${OLLAMA_PID}"
