@@ -242,6 +242,7 @@ Resources:
   WorkerService:
     Condition: IsContinuous
     Type: AWS::ECS::Service
+    DependsOn: TaskDefinition
     Properties:
       ServiceName: !Sub "${ProjectName}-edital-pipeline-worker"
       Cluster: !Ref Cluster
@@ -249,6 +250,7 @@ Resources:
       DesiredCount: 1
       LaunchType: FARGATE
       PlatformVersion: LATEST
+      HealthCheckGracePeriodSeconds: 300
       NetworkConfiguration:
         AwsvpcConfiguration:
           AssignPublicIp: ENABLED
@@ -256,7 +258,7 @@ Resources:
           SecurityGroups: !Ref SecurityGroupIds
       DeploymentConfiguration:
         MaximumPercent: 200
-        MinimumHealthyPercent: 100
+        MinimumHealthyPercent: 0
         DeploymentCircuitBreaker:
           Enable: true
           Rollback: true

@@ -111,6 +111,9 @@ jobs:
           CLUSTER="${CLUSTER_NAME:-origemlab-edital-pipeline}"
           ORCH="${EDITAL_PIPELINE_ORCHESTRATION_MODE:-continuous}"
           EB="${EVENT_BUS_NAME:-default}"
+          echo "OrchestrationMode=${ORCH} (continuous = ECS Service 24/7; scheduled = 0 services + EventBridge)"
+
+          bash .github/scripts/cfn-delete-failed-stack.sh "${STACK_NAME}"
 
           OVERRIDES=(
             "ServiceImage=${IMAGE_URI}"
@@ -163,12 +166,23 @@ jobs:
           [ -n "${WORKER_IDLE_MS_AFTER_WORK:-}" ] && OVERRIDES+=("WorkerIdleMsAfterWork=${WORKER_IDLE_MS_AFTER_WORK}")
           [ -n "${WORKER_IDLE_MS_NO_WORK:-}" ] && OVERRIDES+=("WorkerIdleMsNoWork=${WORKER_IDLE_MS_NO_WORK}")
 
-          aws cloudformation deploy \
+          if ! aws cloudformation deploy \
             --template-file infrastructure/ecs-edital-pipeline-service.yml \
             --stack-name "${STACK_NAME}" \
             --capabilities CAPABILITY_IAM \
             --no-fail-on-empty-changeset \
-            --parameter-overrides "${OVERRIDES[@]}"
+            --parameter-overrides "${OVERRIDES[@]}"; then
+            echo ""
+            echo "=== CloudFormation failure: ${STACK_NAME} ==="
+            aws cloudformation describe-stack-events \
+              --stack-name "${STACK_NAME}" \
+              --query 'StackEvents[?ResourceStatus==`CREATE_FAILED` || ResourceStatus==`UPDATE_FAILED` || ResourceStatus==`DELETE_FAILED`].[LogicalResourceId,ResourceStatus,ResourceStatusReason]' \
+              --output table 2>/dev/null || true
+            echo ""
+            echo "Dica: modo continuous precisa de ecs:CreateService + iam:PassRole no papel GithubActions (README secao IAM)."
+            echo "Se o stack ficou em ROLLBACK_COMPLETE, o proximo run apaga-o com cfn-delete-failed-stack.sh."
+            exit 1
+          fi
 
           bash .github/scripts/ecs-force-rollout-after-cfn.sh "${STACK_NAME}" "${ORCH}"
 

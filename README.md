@@ -31,6 +31,8 @@ Se o deploy falhar com **AccessDenied** em `ecs:CreateService`, `elasticloadbala
 
 **Ollama (`origemlab-ollama-service`):** anexe o statement em [`.github/aws-iam-policy-github-actions-elb.json`](.github/aws-iam-policy-github-actions-elb.json) (ou crie uma política gerenciada e associe ao papel). No IAM: *Policies* → *Create policy* → JSON → colar o ficheiro → *Attach* ao role `GithubActions`.
 
+**Pipelines ECS (incl. edital `continuous`):** anexe [`.github/aws-iam-policy-github-actions-ecs-deploy.json`](.github/aws-iam-policy-github-actions-ecs-deploy.json) (`ecs:CreateService`, EventBridge Scheduler, `iam:PassRole` para task roles).
+
 Exemplo de statement ECS/Scheduler/ECR a **anexar** à mesma política (ajuste `ACCOUNT_ID` e `REGION`; restrinja `Resource` se quiser menos superfície):
 
 ```json
@@ -70,7 +72,7 @@ Exemplo de statement ECS/Scheduler/ECR a **anexar** à mesma política (ajuste `
 
 Para stacks com `OrchestrationMode=scheduled`, o EventBridge Scheduler também precisa das ações `scheduler:*` acima. O SAM continua a precisar de Lambda, EventBridge (regras), S3 (artefatos), etc., conforme o comentário em `.github/workflows/deploy.yml`.
 
-Se o stack `origemlab-ollama-service` ficar em **`ROLLBACK_COMPLETE`**, o workflow apaga-o automaticamente no próximo run (script `cfn-delete-failed-stack.sh`); só é preciso corrigir IAM e rodar de novo.
+Stacks em **`ROLLBACK_COMPLETE`** (`origemlab-ollama-service`, `origemlab-edital-pipeline`, etc.): o deploy apaga o stack automaticamente (`cfn-delete-failed-stack.sh`) antes de tentar de novo; corrija IAM e rode o workflow outra vez.
 
 Após cada deploy CloudFormation bem-sucedido dos workers ECS (`continuous`), os workflows chamam `.github/scripts/ecs-force-rollout-after-cfn.sh`, que executa `ecs:UpdateService` com `--force-new-deployment` para substituir tasks antigas pela nova task definition (imagem + env). Sem isso, uma task pode continuar dias com código/modelo antigos mesmo após push no ECR.
 
