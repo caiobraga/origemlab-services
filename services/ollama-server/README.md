@@ -1,6 +1,6 @@
 # Ollama em EC2 (legado — IP fixo)
 
-> **Recomendado:** [`../ollama-service/README.md`](../ollama-service/README.md) — ECS Fargate + NLB (endpoint estável sem gerir EC2).
+> **Recomendado:** [`../ollama-service/README.md`](../ollama-service/README.md) — ECS Fargate + NLB (`http://origemlab-ollama-nlb-312422980eebe2d0.elb.us-east-1.amazonaws.com:11434`).
 
 Stack CloudFormation: `infrastructure/ec2-ollama-server.yml`  
 Workflow: `.github/workflows/deploy-ollama-server.yml` (só manual)

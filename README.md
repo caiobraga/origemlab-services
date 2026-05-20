@@ -19,7 +19,7 @@ Os workflows **`deploy-scraper-runner`**, **`deploy-document-processor`**, **`de
 
 ECR `origemlab-ingestion-pipeline-service` e `origemlab-edital-pipeline-service` são **criados automaticamente** no primeiro deploy se ainda não existirem (papel OIDC precisa de `ecr:CreateRepository`). Alternativa única: `infrastructure/ecr-repositories.yml`.
 
-Variáveis obrigatórias: `VPC_ID`, `SUBNET_IDS`, `SECURITY_GROUP_IDS`, `OLLAMA_BASE_URL`, secrets Supabase. Stacks (opcional): `INGESTION_PIPELINE_STACK_NAME` (default `origemlab-ingestion-pipeline`), `EDITAL_PIPELINE_STACK_NAME` (default `origemlab-edital-pipeline`).
+Variáveis obrigatórias: `VPC_ID`, `SUBNET_IDS`, `SECURITY_GROUP_IDS`, `OLLAMA_BASE_URL`, secrets Supabase. Produção: `OLLAMA_BASE_URL=http://origemlab-ollama-nlb-312422980eebe2d0.elb.us-east-1.amazonaws.com:11434`. Stacks (opcional): `INGESTION_PIPELINE_STACK_NAME` (default `origemlab-ingestion-pipeline`), `EDITAL_PIPELINE_STACK_NAME` (default `origemlab-edital-pipeline`).
 
 **Por que o cluster mostra 0 serviços?** Com `ECS_ORCHESTRATION_MODE=scheduled` (default) **não existe ECS Service** — só **EventBridge Scheduler** (`origemlab-edital-pipeline`, `origemlab-ingestion-pipeline`) que lança **tasks** de hora em hora (ou no intervalo configurado). Entre execuções, **0 tasks** é normal. Opcional após deploy: `ECS_RUN_TASK_AFTER_DEPLOY=true` (requer `ecs:RunTask` no papel GithubActions; senão use o **EventBridge Schedule**). Ver tasks: ECS → cluster → aba **Tasks**; agendamento: **EventBridge → Schedules**.
 

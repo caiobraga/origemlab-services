@@ -2,6 +2,8 @@
 
 Orquestra scrapers por **fonte** (sites de editais), grava em **Supabase** (`editais`, `edital_pdfs`) e publica eventos no **EventBridge** (`NewEditaisFound`, `ScraperRunCompleted`, `JobFailed`, etc.).
 
+**Produção (pipelines):** `OLLAMA_BASE_URL=http://origemlab-ollama-nlb-312422980eebe2d0.elb.us-east-1.amazonaws.com:11434` (fase document-processor no ingestion-pipeline).
+
 ## Requisitos
 
 - Node **≥ 20**

@@ -7,6 +7,8 @@ Um único container ECS executa em sequência:
 
 Substitui o par scraper (agendado) + document-processor (muitas vezes **24/7** contínuo) por **uma task agendada**.
 
+**Produção:** `OLLAMA_BASE_URL=http://origemlab-ollama-nlb-312422980eebe2d0.elb.us-east-1.amazonaws.com:11434` (GitHub Variables / task env).
+
 ## Local
 
 ```bash

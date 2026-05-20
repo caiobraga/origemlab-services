@@ -36,7 +36,7 @@ Se não puder alterar IAM: abra manualmente no console **EC2 → Security Groups
 
 ## Depois do deploy
 
-1. Copie o output **`OllamaBaseUrl`** (ex. `http://origemlab-ollama-nlb-xxxxx.elb.us-east-1.amazonaws.com:11434`).
+1. Copie o output **`OllamaBaseUrl`** (produção atual: `http://origemlab-ollama-nlb-312422980eebe2d0.elb.us-east-1.amazonaws.com:11434`).
 2. Defina **`OLLAMA_BASE_URL`** no GitHub (backend + services) e em `.env` local.
 3. Apague o stack EC2 antigo **`origemlab-ollama`** se ainda existir (evita custo duplicado).
 

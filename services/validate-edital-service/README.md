@@ -9,7 +9,7 @@ Replica o script **`api:validate-editais-corretos`**: lê editais e documentos n
 
 ## Configuração
 
-**Obrigatório:** `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `OLLAMA_BASE_URL`. Modelos/timeouts e limites de lote: bloco **validate-edital-service** em [`.env.example`](../../.env.example) (`VALIDATE_EDITAIS_LIMIT`, `OLLAMA_EMBED_MODEL`, `VALIDATE_SKIP_POLISH`, etc.).
+**Obrigatório:** `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `OLLAMA_BASE_URL` (produção: `http://origemlab-ollama-nlb-312422980eebe2d0.elb.us-east-1.amazonaws.com:11434`). Modelos/timeouts e limites de lote: bloco **validate-edital-service** em [`.env.example`](../../.env.example) (`VALIDATE_EDITAIS_LIMIT`, `OLLAMA_EMBED_MODEL`, `VALIDATE_SKIP_POLISH`, etc.).
 
 ## Correr localmente
 

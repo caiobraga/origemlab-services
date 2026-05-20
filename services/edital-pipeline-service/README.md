@@ -7,6 +7,8 @@ Um único container ECS executa em sequência:
 
 Substitui dois workers Fargate 24/7 (`process-edital` + `validate-edital`) por **uma task agendada** (EventBridge Scheduler), reduzindo custo de ECS.
 
+**Produção:** `OLLAMA_BASE_URL=http://origemlab-ollama-nlb-312422980eebe2d0.elb.us-east-1.amazonaws.com:11434` (GitHub Variables / task env).
+
 ## Local
 
 ```bash

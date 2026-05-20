@@ -11,6 +11,8 @@ Processa PDFs em `edital_pdfs`: descarrega, extrai texto, divide em **chunks**, 
 
 Ver bloco **document-processor** em [`.env.example`](../../.env.example): `SUPABASE_*`, `OLLAMA_BASE_URL`, `OLLAMA_CHAT_MODEL`, `OLLAMA_EMBED_MODEL`, `CHUNK_SIZE`, `CHUNK_OVERLAP`, `ENRICH_CHUNKS`, `DOCUMENT_PROCESSOR_EMBED_PERGUNTAS`, etc.
 
+**Produção:** `OLLAMA_BASE_URL=http://origemlab-ollama-nlb-312422980eebe2d0.elb.us-east-1.amazonaws.com:11434`.
+
 Migração para a segunda coluna de embedding: `sql/20260513_documents_embedding_perguntas.sql`.
 
 ## Correr localmente
