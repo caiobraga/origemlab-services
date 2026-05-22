@@ -2,6 +2,8 @@ import { createClient } from "@supabase/supabase-js";
 import path from "node:path";
 import { fetchWithScraperAgent } from "./fetchAgent.mjs";
 import { describeFetchError } from "./httpFetch.mjs";
+import { buildEditalTitulo, isSupplementTitle, isWeakLinkTitle } from "./scraperTitleUtils.mjs";
+import { normalizePdfUrl, resolvePdfFetchUrl } from "./pdfUrlResolve.mjs";
 
 const STORAGE_BUCKET = "edital-pdfs";
 
@@ -30,16 +32,21 @@ function sanitizeFileName(name) {
 }
 
 async function fetchPdf(url, timeoutMs = 45000) {
+  const fetchUrl = resolvePdfFetchUrl(url);
   const controller = new AbortController();
   const t = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const res = await fetchWithScraperAgent(url, {
+    const res = await fetchWithScraperAgent(fetchUrl, {
       method: "GET",
       redirect: "follow",
       signal: controller.signal,
       headers: { Accept: "application/pdf,application/octet-stream,*/*" },
     });
-    if (!res.ok) throw new Error(`PDF fetch failed: HTTP ${res.status} for ${url}`);
+    if (!res.ok) {
+      throw new Error(
+        `PDF fetch failed: HTTP ${res.status} for ${fetchUrl}${fetchUrl !== url ? ` (original: ${url})` : ""}`,
+      );
+    }
     const ab = await res.arrayBuffer();
     return Buffer.from(ab);
   } catch (e) {
@@ -60,7 +67,20 @@ export function getSupabaseFromEnv() {
   return createClient(url, key);
 }
 
+function normalizeEditalPayload(e) {
+  const numero = e.numero ? String(e.numero).trim() : undefined;
+  let titulo = buildEditalTitulo({ linkText: e.titulo, numero, fonte: e.fonte });
+  if (!titulo || isSupplementTitle(titulo) || isWeakLinkTitle(titulo)) {
+    if (!numero) return null;
+    titulo = `Edital ${numero}`;
+  }
+  return { ...e, titulo, numero };
+}
+
 async function upsertEditalRow(supabase, e) {
+  const norm = normalizeEditalPayload(e);
+  if (!norm) return null;
+  e = norm;
   const titulo = String(e.titulo || "").trim();
   if (!titulo) throw new Error("Edital missing titulo");
 
@@ -108,7 +128,10 @@ async function upsertEditalRow(supabase, e) {
   return { id: ins.data.id, created: true };
 }
 
+// upsertEditalRow returns null when edital should be skipped (orphan supplement, etc.)
+
 async function ensurePdf(supabase, editalId, e, pdfUrl) {
+  pdfUrl = normalizePdfUrl(pdfUrl);
   const fonte = sanitizePathSegment(e.fonte || "unknown");
   const numero = sanitizePathSegment(e.numero || "unknown");
   const urlPath = new URL(pdfUrl).pathname;
@@ -151,7 +174,14 @@ async function ensurePdf(supabase, editalId, e, pdfUrl) {
 export async function upsertEditaisAndPdfs(supabase, editais) {
   const results = [];
   for (const e of editais) {
-    const { id, created } = await upsertEditalRow(supabase, e);
+    const row = await upsertEditalRow(supabase, e);
+    if (!row) {
+      console.log(
+        `[scraper-runner] skip edital (${e.fonte || "?"}): título inválido/suplemento sem número — ${String(e.titulo || "").slice(0, 80)}`,
+      );
+      continue;
+    }
+    const { id, created } = row;
     let newPdfs = 0;
     let failedPdfs = 0;
     for (const pdfUrl of e.pdfUrls || []) {

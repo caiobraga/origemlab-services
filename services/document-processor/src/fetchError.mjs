@@ -21,7 +21,14 @@ export function describeFetchError(err) {
 }
 
 export function isTransientFetchError(err) {
+  if (isUnreachableNetworkError(err)) return false;
   if (err instanceof Error && err.name === "AbortError") return false;
   const msg = describeFetchError(err).toLowerCase();
-  return /fetch failed|econnreset|econnrefused|etimedout|enotfound|socket hang up|network|und_err_connect_timeout/i.test(msg);
+  return /fetch failed|econnreset|econnrefused|etimedout|socket hang up|network|und_err_connect_timeout/i.test(msg);
+}
+
+/** NLB/VPC inacessível no laptop — não adianta retry na mesma URL. */
+export function isUnreachableNetworkError(err) {
+  const msg = describeFetchError(err).toLowerCase();
+  return /enetunreach|ehostunreach|network is unreachable|und_err_connect_timeout/i.test(msg);
 }

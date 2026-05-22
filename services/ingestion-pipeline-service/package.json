@@ -3,12 +3,15 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "start": "node src/runIngestionPipeline.mjs"
+    "start": "node src/runIngestionPipeline.mjs",
+    "fix-bad-titles": "node scripts/fix-bad-titles.mjs",
+    "audit-db": "node scripts/audit-editais-db.mjs"
   },
   "engines": {
     "node": ">=20"
   },
   "dependencies": {
+    "@supabase/supabase-js": "^2.81.1",
     "dotenv": "^16.6.1"
   }
 }

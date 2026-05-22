@@ -23,7 +23,19 @@ npm run run -- --source finep
 ```
 
 - **Todas as fontes:** `npm run run:all` ou `npm run run -- --source all`
-- **Fonte única:** `--source <chave>`; chaves válidas incluem: `finep`, `rotadofomento`, `plataforma-inovacao-industria`, `fapern`, `capta`, `fapac`, `secti`, `funcap`, `facepe`, `fapdf`, `fapeal`, `fapema`, `fapepi`, `fapergs`, `faperj`, `fapesc`, `fapespa`, `fapesq`, `fapitec`, `fapt` (ver `SOURCES` em `src/main.mjs`).
+- **Fonte única:** `--source <chave>` (lista completa em `SOURCES` em `src/main.mjs`):
+  `finep`, `rotadofomento`, `plataforma-inovacao-industria`, `fapern`, `capta`, `fapac`, `secti`, `funcap`, `facepe`, `fapdf`, `fapeal`, `fapema`, `fapepi`, `fapergs`, `faperj`, `fapesc`, `fapespa`, `fapesq`, `fapitec`, `fapt`, `cnpq`, `fapemig`, `fapemat`, `fapes`, `prosas`, `sigfapes`.
+
+### Fontes com Puppeteer (variáveis opcionais)
+
+| Fonte | Env |
+|-------|-----|
+| `cnpq` | `CNPQ_CHAMADAS_URL`, `CNPQ_MAX_ITEMS` |
+| `fapemig` | `FAPEMIG_MAX_ITEMS` |
+| `fapemat` | `FAPEMAT_MAX_ITEMS`, `FAPEMAT_EDITAL_URLS` (fallback) |
+| `fapes` | `FAPES_MAX_PANELS` |
+| `prosas` | `PROSAS_MAX_PAGES` |
+| `sigfapes` | **`SIGFAPES_USERNAME`**, **`SIGFAPES_PASSWORD`** (obrigatórios; sem credenciais a fonte é ignorada) |
 
 ## Docker
 

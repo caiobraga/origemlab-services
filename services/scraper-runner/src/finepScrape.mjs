@@ -1,23 +1,23 @@
 import * as cheerio from "cheerio";
 import { fetchWithScraperAgent } from "./fetchAgent.mjs";
 import { describeFetchError } from "./httpFetch.mjs";
+import { fetchRenderedHtml } from "./puppeteerHtml.mjs";
+import { absoluteUrl, normalizeSpaces, extractNumeroFromText } from "./simplePdfPageScrape.mjs";
+import { extractPdfsFromHtml } from "./editalListScrape.mjs";
+import { filterEditaisCurrentYear } from "./yearFilter.mjs";
 
 const BASE_URL = "https://www.finep.gov.br";
-const LIST_URL = `${BASE_URL}/chamadas-publicas/chamadaspublicas?situacao=aberta`;
-
-function normalizeSpaces(s) {
-  return String(s || "").replace(/\u00a0/g, " ").replace(/\s+/g, " ").trim();
-}
+const LEGACY_LIST_URL = `${BASE_URL}/chamadas-publicas/chamadaspublicas?situacao=aberta`;
+const OPORTUNIDADES_URL = `${BASE_URL}/oportunidades`;
 
 function normalizeHref(href) {
   const h = String(href || "").trim();
-  // Finep sometimes returns weird hrefs like ":80/..." which end up as "/:80/..." when resolved.
   if (h.startsWith(":80/")) return h.slice(3);
   if (h.startsWith("/:80/")) return h.slice(4);
   return h;
 }
 
-function absoluteUrl(href) {
+function absFinep(href) {
   const h = normalizeHref(href);
   try {
     return new URL(h, BASE_URL).toString();
@@ -73,7 +73,7 @@ function isEditalInYear(edital, year) {
   return y === year;
 }
 
-function extractList(html) {
+function extractLegacyList(html) {
   const $ = cheerio.load(html);
   const items = [];
 
@@ -92,35 +92,27 @@ function extractList(html) {
     const href = a.attr("href") || "";
     const titulo = normalizeSpaces(a.text());
     if (!href || !titulo) return;
-    const link = absoluteUrl(href);
-    // Skip header/nav rows (e.g. "Chamadas Públicas", "+A") that are not detail pages.
+    const link = absFinep(href);
     if (!isDetailLink(link)) return;
     if (/^\+a$/i.test(titulo)) return;
     if (/chamadas\s+p[úu]blicas/i.test(titulo)) return;
-
     const cols = row.find("td");
-    const dataPublicacao = normalizeSpaces($(cols.get(1)).text());
-    const prazoEnvio = normalizeSpaces($(cols.get(2)).text());
-
     items.push({
       titulo,
       link,
-      dataPublicacao: dataPublicacao || undefined,
-      dataEncerramento: prazoEnvio || undefined,
+      dataPublicacao: normalizeSpaces($(cols.get(1)).text()) || undefined,
+      dataEncerramento: normalizeSpaces($(cols.get(2)).text()) || undefined,
     });
   });
 
   if (items.length === 0) {
-    $("a").each((_, el) => {
-      const a = $(el);
-      const href = (a.attr("href") || "").trim();
-      const titulo = normalizeSpaces(a.text());
+    $("a[href]").each((_, el) => {
+      const href = (el.attribs?.href || $(el).attr("href") || "").trim();
+      const titulo = normalizeSpaces($(el).text());
       if (!href || !titulo) return;
-      if (!href.includes("chamadas-publicas")) return;
-      const link = absoluteUrl(href);
+      const link = absFinep(href);
       if (!isDetailLink(link)) return;
-      if (/^\+a$/i.test(titulo)) return;
-      if (/chamadas\s+p[úu]blicas/i.test(titulo)) return;
+      if (/^\+a$/i.test(titulo) || /chamadas\s+p[úu]blicas/i.test(titulo)) return;
       items.push({ titulo, link });
     });
   }
@@ -129,47 +121,115 @@ function extractList(html) {
   return items.filter((i) => (seen.has(i.link) ? false : (seen.add(i.link), true)));
 }
 
-function extractPdfUrlsFromDetail(html) {
+const FINEP_TITLE_BLOCK =
+  /^(institucional|oportunidades|explore|busque|financiamento|cr[ée]dito|subven|patroc|contato|acesso)/i;
+
+function isFinepProductLink(link) {
+  try {
+    const u = new URL(link);
+    const p = u.pathname.toLowerCase();
+    if (p.includes("/chamadapublica/")) return true;
+    if (/\/(financiamento|credito|subvencao|patrocinio)/.test(p)) {
+      if (p === "/oportunidades" || p.endsWith("/sobre-a-finep")) return false;
+      return true;
+    }
+    return false;
+  } catch {
+    return false;
+  }
+}
+
+/** Portal novo (/oportunidades) — cards de produtos no <main>. */
+function extractOportunidadesCards(html) {
   const $ = cheerio.load(html);
-  const urls = [];
-  const maybePush = (raw) => {
-    const href = String(raw || "").trim();
-    if (!href) return;
-    const abs = absoluteUrl(href);
-    const lower = abs.toLowerCase();
-    if (lower.includes(".pdf")) urls.push(abs);
-  };
-  $("a").each((_, el) => {
-    maybePush($(el).attr("href"));
+  const items = [];
+  const seen = new Set();
+  const $root = $("body");
+
+  $root.find("a[href]").each((_, a) => {
+    const href = $(a).attr("href") || "";
+    const link = absFinep(href);
+    if (!isFinepProductLink(link)) return;
+    if (seen.has(link)) return;
+
+    const titulo =
+      normalizeSpaces($(a).find("h2, h3").first().text()) ||
+      normalizeSpaces($(a).attr("title")) ||
+      normalizeSpaces($(a).text());
+    if (!titulo || titulo.length < 6 || titulo.length > 200) return;
+    if (FINEP_TITLE_BLOCK.test(titulo)) return;
+    if (/^\+a$|ver mais|saiba mais/i.test(titulo)) return;
+
+    seen.add(link);
+    items.push({
+      titulo: titulo.slice(0, 400),
+      link,
+      dataPublicacao: undefined,
+      dataEncerramento: undefined,
+    });
   });
-  $("iframe,embed,object").each((_, el) => {
-    maybePush($(el).attr("src"));
-  });
-  return [...new Set(urls)];
+
+  return items;
 }
 
 export async function scrapeFinepCurrentYear() {
   const year = new Date().getFullYear();
-  const listHtml = await fetchText(LIST_URL);
-  const list = extractList(listHtml);
-
+  const usePuppeteer = String(process.env.FINEP_USE_PUPPETEER || "1").trim() !== "0";
   const editais = [];
-  for (const item of list) {
-    if (!isEditalInYear(item, year)) continue;
+  const seenLinks = new Set();
 
-    const detailHtml = await fetchText(item.link);
-    const pdfUrls = extractPdfUrlsFromDetail(detailHtml);
-    editais.push({
-      fonte: "finep",
-      titulo: item.titulo,
-      link: item.link,
-      dataPublicacao: item.dataPublicacao,
-      dataEncerramento: item.dataEncerramento,
-      processadoEm: new Date().toISOString(),
-      pdfUrls,
-    });
+  const addFromList = async (items, kind) => {
+    for (const item of items) {
+      if (!isEditalInYear(item, year)) continue;
+      if (seenLinks.has(item.link)) continue;
+      seenLinks.add(item.link);
+
+      let pdfUrls = [];
+      if (kind === "legacy") {
+        try {
+          const detailHtml = await fetchText(item.link);
+          pdfUrls = extractPdfsFromHtml(detailHtml, item.link);
+        } catch {
+          pdfUrls = [];
+        }
+      }
+
+      editais.push({
+        fonte: "finep",
+        titulo: item.titulo,
+        link: item.link,
+        dataPublicacao: item.dataPublicacao,
+        dataEncerramento: item.dataEncerramento,
+        processadoEm: new Date().toISOString(),
+        pdfUrls: pdfUrls.length ? pdfUrls : undefined,
+        numero: extractNumeroFromText(item.titulo) || undefined,
+      });
+    }
+  };
+
+  if (usePuppeteer) {
+    try {
+      const legacyHtml = await fetchRenderedHtml(LEGACY_LIST_URL, {
+        waitForSelector: 'a[href*="chamadapublica"], table tbody tr',
+        waitMs: 4000,
+      });
+      await addFromList(extractLegacyList(legacyHtml), "legacy");
+    } catch (e) {
+      console.warn(`[scraper.finep] legacy puppeteer: ${e instanceof Error ? e.message : e}`);
+    }
+
+    try {
+      const opHtml = await fetchRenderedHtml(OPORTUNIDADES_URL, {
+        waitMs: 5000,
+      });
+      await addFromList(extractOportunidadesCards(opHtml), "oportunidade");
+    } catch (e) {
+      console.warn(`[scraper.finep] oportunidades puppeteer: ${e instanceof Error ? e.message : e}`);
+    }
+  } else {
+    const listHtml = await fetchText(LEGACY_LIST_URL);
+    await addFromList(extractLegacyList(listHtml), "legacy");
   }
 
   return editais.filter((e) => isEditalInYear(e, year));
 }
-

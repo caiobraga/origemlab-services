@@ -1,6 +1,4 @@
-import * as cheerio from "cheerio";
 import { fetchWithScraperAgent } from "./fetchAgent.mjs";
-import { filterEditaisCurrentYear } from "./yearFilter.mjs";
 import { describeFetchError } from "./httpFetch.mjs";
 
 export function extractNumeroFromText(t) {
@@ -67,50 +65,10 @@ export function normalizeSpaces(s) {
   return String(s || "").replace(/\u00a0/g, " ").replace(/\s+/g, " ").trim();
 }
 
-export function scrapePdfAnchorsFromSinglePage({ source, orgao, listUrl, baseUrl, pdfLinkPredicate }) {
+export function scrapePdfAnchorsFromSinglePage(opts) {
   return async () => {
-    const html = await fetchHtml(listUrl);
-    const $ = cheerio.load(html);
-    const byNumero = new Map();
-    const seen = new Set();
-
-    $("a[href]").each((_, el) => {
-      const href = String($(el).attr("href") || "").trim();
-      if (!href) return;
-      const abs = absoluteUrl(href, baseUrl || listUrl);
-      if (!abs) return;
-      const isPdf = pdfLinkPredicate ? pdfLinkPredicate(abs, href) : abs.toLowerCase().includes(".pdf");
-      if (!isPdf) return;
-
-      const text = normalizeSpaces($(el).text());
-      const numero = extractNumeroFromText(text);
-      const key = `${numero || "no-num"}:${abs}`;
-      if (seen.has(key)) return;
-      seen.add(key);
-
-      const title = text && text.length > 6 ? text : `Edital ${source}`;
-      const k = numero || title;
-      const cur = byNumero.get(k);
-      if (cur) {
-        if (!cur.pdfUrls.includes(abs)) cur.pdfUrls.push(abs);
-      } else {
-        byNumero.set(k, { titulo: title.slice(0, 400), numero, pdfUrls: [abs] });
-      }
-    });
-
-    const editais = [];
-    for (const v of byNumero.values()) {
-      editais.push({
-        numero: v.numero || undefined,
-        titulo: v.titulo,
-        fonte: source,
-        orgao,
-        link: listUrl,
-        pdfUrls: v.pdfUrls,
-        processadoEm: new Date().toISOString(),
-      });
-    }
-    return filterEditaisCurrentYear(editais);
+    const { scrapeEditaisFromListPage } = await import("./editalListScrape.mjs");
+    return scrapeEditaisFromListPage({ ...opts, isEditalLink: null })();
   };
 }
 

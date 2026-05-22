@@ -52,14 +52,75 @@ type FieldKey =
   | "timeline_estimada";
 
 function fieldType(field: FieldKey): "string" | "boolean" | "json" {
-  if (field === "timeline_estimada") return "json";
+  if (field === "timeline_estimada" || field === "valor_projeto") return "json";
   if (field === "is_researcher" || field === "is_company") return "boolean";
   return "string";
 }
 
+const VALOR_JSON_STORE_MAX = 1400;
+const VALOR_LINE_MAX = 240;
+const VALOR_ITEMS_MAX = 8;
+
+/** Compacta valor_projeto para string JSON curta (evita parágrafos enormes no banco/UI). */
+function normalizeValorProjetoForStorage(raw: unknown): string | null {
+  if (raw == null) return null;
+
+  const pushLine = (items: string[], line: string) => {
+    const t = String(line || "").replace(/\s+/g, " ").trim();
+    if (!t) return;
+    items.push(t.length > VALOR_LINE_MAX ? `${t.slice(0, VALOR_LINE_MAX - 1)}…` : t);
+  };
+
+  const fromObject = (obj: any): string[] => {
+    const items: string[] = [];
+    const v = obj?.valor;
+    if (Array.isArray(v)) {
+      for (const x of v) {
+        if (typeof x === "string") pushLine(items, x);
+        else if (x && typeof x === "object" && x.valor != null) pushLine(items, String(x.valor));
+      }
+    } else if (typeof v === "string") {
+      pushLine(items, v);
+    }
+    return items.slice(0, VALOR_ITEMS_MAX);
+  };
+
+  let items: string[] = [];
+  if (typeof raw === "object" && raw !== null) {
+    items = fromObject(raw);
+  } else {
+    const text = String(raw).replace(/\s+/g, " ").trim();
+    if (!text) return null;
+    const parsed = text.startsWith("{") ? safeJsonParse(text) : null;
+    if (parsed && typeof parsed === "object") {
+      items = fromObject(parsed);
+    } else if (text.length <= VALOR_LINE_MAX) {
+      return text;
+    } else {
+      const money = text.match(
+        /(?:até\s+)?R\$\s*[\d.,]+(?:\s*(?:mil|milhões?|mi\.?|bi\.?))?|(?:teto|máximo|mínimo|valor)[^.]{0,40}R\$\s*[\d.,]+/gi,
+      );
+      if (money?.length) {
+        for (const m of money) pushLine(items, m);
+        items = [...new Set(items)].slice(0, VALOR_ITEMS_MAX);
+      } else {
+        return `${text.slice(0, VALOR_LINE_MAX - 1)}…`;
+      }
+    }
+  }
+
+  if (items.length === 0) return null;
+  let out = JSON.stringify({ valor: items });
+  if (out.length > VALOR_JSON_STORE_MAX) {
+    const shorter = items.map((s) => (s.length > 120 ? `${s.slice(0, 119)}…` : s));
+    out = JSON.stringify({ valor: shorter }).slice(0, VALOR_JSON_STORE_MAX);
+  }
+  return out;
+}
+
 /** Indica se o campo ainda deve passar pela extração (null, vazio, timeline vazia, boolean ausente). */
 function fieldNeedsExtraction(field: FieldKey, before: any): boolean {
-  if (field === "timeline_estimada") {
+  if (field === "timeline_estimada" || field === "valor_projeto") {
     return !extractionValueIsUseful(field, before);
   }
   if (field === "is_researcher" || field === "is_company") {
@@ -167,7 +228,9 @@ function extractJsonBlock(s: string): string {
 
 function promptForField(field: FieldKey, edital: Pick<EditalInfo, "numero" | "titulo" | "fonte">): string {
   const ex =
-    fieldType(field) === "json"
+    field === "valor_projeto"
+      ? `{\"valor_projeto\":{\"valor\":[\"até R$ 500.000\",\"bolsa R$ 3.000/mês\"]}} ou {\"valor_projeto\":null}`
+      : fieldType(field) === "json"
       ? `{\"${field}\":{\"fases\":[{\"nome\":\"Inscrição\",\"prazo\":\"...\",\"status\":\"aberto|fechado|pendente\",\"data_inicio\":\"YYYY-MM-DD\",\"data_fim\":\"YYYY-MM-DD\"}]}} ou {\"${field}\":null}`
       : fieldType(field) === "boolean"
         ? `{\"${field}\": true} ou {\"${field}\": false} ou {\"${field}\": null}`
@@ -188,6 +251,12 @@ function promptForField(field: FieldKey, edital: Pick<EditalInfo, "numero" | "ti
     `- Responda em UMA linha JSON, exatamente com a chave "${field}"`,
     "- Não inclua outras chaves",
     "- Não inclua quebras de linha fora do JSON",
+    ...(field === "valor_projeto"
+      ? [
+          "- valor_projeto: lista curta em \"valor\" (máx. 6 itens, cada um até ~120 caracteres); só valores/tetos/bolsas com evidência no texto",
+          "- Não copie parágrafos inteiros do edital",
+        ]
+      : []),
   ].join("\n");
 }
 
@@ -454,6 +523,11 @@ function buildPlainFullText(rows: any[]): string {
 
 function extractionValueIsUseful(field: FieldKey, value: any): boolean {
   if (value === undefined) return false;
+  if (field === "valor_projeto") {
+    if (value === null) return false;
+    const n = normalizeValorProjetoForStorage(value);
+    return Boolean(n && n.trim());
+  }
   if (field === "timeline_estimada") {
     if (value === null) return false;
     const v = typeof value === "object" && value && "fases" in value ? value : null;
@@ -1025,7 +1099,19 @@ async function extractFieldValue(
   const t = fieldType(field);
   if (value === null) return { value: null, rawJson, modelOutput };
   if (t === "boolean") return { value: typeof value === "boolean" ? value : null, rawJson, modelOutput };
-  if (t === "json") return { value: typeof value === "object" ? value : null, rawJson, modelOutput };
+  if (t === "json") {
+    if (field === "timeline_estimada") {
+      return { value: typeof value === "object" ? value : null, rawJson, modelOutput };
+    }
+    if (field === "valor_projeto") {
+      const normalized =
+        normalizeValorProjetoForStorage(
+          typeof value === "object" && value !== null ? value : typeof value === "string" ? value : null,
+        );
+      return { value: normalized, rawJson, modelOutput };
+    }
+    return { value: null, rawJson, modelOutput };
+  }
   return { value: typeof value === "string" ? value.trim() : null, rawJson, modelOutput };
 }
 

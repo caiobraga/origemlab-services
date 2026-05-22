@@ -11,7 +11,14 @@
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadEnv } from "./loadEnv.mjs";
-import { enrichChunkForRetrieval, enrichDelayMs, retrievalEmbeddingInputFromChunkContent } from "./enrichChunk.mjs";
+import { initOllamaBaseUrl } from "./ollamaResolve.mjs";
+import {
+  enrichChunkForRetrieval,
+  enrichConcurrency,
+  enrichMaxChunksPerPdf,
+  retrievalEmbeddingInputFromChunkContent,
+} from "./enrichChunk.mjs";
+import { mapWithConcurrency } from "./concurrency.mjs";
 import { embedWithOllamaBatched } from "./embed.mjs";
 import {
   chunkText,
@@ -345,8 +352,18 @@ export async function runDocumentProcessor(cliArgs = process.argv.slice(2)) {
     return { queueLength: 0 };
   }
 
+  await initOllamaBaseUrl();
+
   console.log("[document-processor] PDF → chunks → enrich (process-edital context) → embed → documents");
-  console.log(`   chunk size=${CHUNK_SIZE} overlap=${CHUNK_OVERLAP} enrich=${process.env.ENRICH_CHUNKS ?? "1"}`);
+  const enrichOn = !["0", "false"].includes(String(process.env.ENRICH_CHUNKS ?? "1").trim().toLowerCase());
+  const enrichPar = enrichOn ? enrichConcurrency() : 0;
+  const enrichCap = enrichOn ? enrichMaxChunksPerPdf() : 0;
+  console.log(
+    `   chunk size=${CHUNK_SIZE} overlap=${CHUNK_OVERLAP} enrich=${enrichOn ? 1 : 0}${enrichOn ? ` concurrency=${enrichPar}` : ""}${enrichCap > 0 ? ` max_chunks=${enrichCap}` : ""}`,
+  );
+  console.log(
+    `   ollama=${process.env.OLLAMA_BASE_URL} chat=${process.env.OLLAMA_CHAT_MODEL || "—"} embed=${process.env.OLLAMA_EMBED_MODEL || "mxbai-embed-large"}`,
+  );
   if (dryRun) console.log("   mode: --dry-run");
   if (rebuild) console.log("   mode: --rebuild (força recriar chunks)");
 
@@ -354,6 +371,13 @@ export async function runDocumentProcessor(cliArgs = process.argv.slice(2)) {
 
   const toProcess = await loadProcessingQueue(supabase, { processAll, limit });
   console.log(`   PDFs na fila: ${toProcess.length}`);
+  if (enrichOn && toProcess.length > 20) {
+    const estChunks = 30;
+    const estMin = Math.round((toProcess.length * estChunks * (enrichOn ? 8 / enrichPar : 0.5)) / 60);
+    console.log(
+      `   ⏱️ enrich=1 ≈ ${estMin}+ min nesta fila (depende do modelo/Ollama). Rápido: ENRICH_CHUNKS=0 | paralelo: ENRICH_CONCURRENCY=6 | modelo: qwen2.5:3b-instruct`,
+    );
+  }
   if (toProcess.length === 0) {
     console.log(
       "   Nenhum PDF pendente. Use `npm run start -- --all` para reprocessar tudo ou confira OLLAMA_BASE_URL/embeddings.",
@@ -379,7 +403,6 @@ export async function runDocumentProcessor(cliArgs = process.argv.slice(2)) {
   let totalChunks = 0;
   let totalOk = 0;
   let totalFail = 0;
-  const delayEnrich = enrichDelayMs();
 
   async function processOne(pdf, i) {
     const fileId = pdf.file_id || pdf.id;
@@ -466,17 +489,21 @@ export async function runDocumentProcessor(cliArgs = process.argv.slice(2)) {
       }
 
       const tEnrich0 = Date.now();
-      const enrichedRows = [];
-      for (let ci = 0; ci < chunks.length; ci++) {
-        if (delayEnrich > 0 && ci > 0) await sleep(delayEnrich);
-        const plain = chunks[ci];
-        const { embeddingText, embeddingRetrievalText, enrichment, enrichFailed } = await enrichChunkForRetrieval(plain, {
-          chunkIndex: ci,
-        });
-        if (ci > 0 && ci % 50 === 0) {
-          console.log(`      🧩 enrich progress: ${ci}/${chunks.length} chunks (total=${msSince(pdfT0)}ms)`);
+      const maxEnrich = enrichMaxChunksPerPdf();
+      const enrichResults = await mapWithConcurrency(chunks, enrichOn ? enrichConcurrency() : 1, async (plain, ci) => {
+        const skipLlm = maxEnrich > 0 && ci >= maxEnrich;
+        const { embeddingText, embeddingRetrievalText, enrichment, enrichFailed } = skipLlm
+          ? {
+              embeddingText: plain,
+              embeddingRetrievalText: plain,
+              enrichment: null,
+              enrichFailed: false,
+            }
+          : await enrichChunkForRetrieval(plain, { chunkIndex: ci });
+        if (ci > 0 && ci % 25 === 0) {
+          console.log(`      🧩 enrich progress: ${ci}/${chunks.length} (total=${msSince(pdfT0)}ms)`);
         }
-        enrichedRows.push({
+        return {
           file_id: String(fileId),
           content: embeddingText,
           retrievalEmbedInput: embeddingRetrievalText,
@@ -487,11 +514,15 @@ export async function runDocumentProcessor(cliArgs = process.argv.slice(2)) {
             chunk_plain_preview: plain.slice(0, 1500),
             enrichment: enrichment || undefined,
             enrich_failed: Boolean(enrichFailed),
+            enrich_skipped_llm: skipLlm || undefined,
             embed_truncates_at: parseInt(process.env.EMBED_MAX_CHARS_PER_INPUT || "512", 10),
           },
-        });
-      }
-      console.log(`      🧩 enrich done chunks=${enrichedRows.length} (t=${msSince(tEnrich0)}ms, total=${msSince(pdfT0)}ms)`);
+        };
+      });
+      const enrichedRows = enrichResults;
+      console.log(
+        `      🧩 enrich done chunks=${enrichedRows.length} (t=${msSince(tEnrich0)}ms, total=${msSince(pdfT0)}ms)`,
+      );
 
       let embeddingsForInsert;
       let embeddingsPerguntasForInsert;

@@ -2,6 +2,7 @@ import * as cheerio from "cheerio";
 import { fetchWithScraperAgent } from "./fetchAgent.mjs";
 import { filterEditaisCurrentYear } from "./yearFilter.mjs";
 import {
+  buildEditalTitulo,
   extractNumeroFromLinkText,
   extractParentEditalNumero,
   isSupplementTitle,
@@ -78,18 +79,16 @@ function extractEditais(html) {
       return;
     }
 
+    const safeTitulo = buildEditalTitulo({ linkText: text, numero, fonte: "funcap" });
     const existing = byNumero.get(numero);
     if (existing) {
       if (!existing.pdfUrls.includes(abs)) existing.pdfUrls.push(abs);
       if (!supplement) {
-        existing.titulo = pickPreferredTitulo(existing.titulo, text);
+        existing.titulo = pickPreferredTitulo(existing.titulo, safeTitulo);
       }
     } else {
-      const titulo = supplement
-        ? `Edital ${numero}`
-        : text || `Edital ${numero}`;
       byNumero.set(numero, {
-        titulo: pickPreferredTitulo("", titulo),
+        titulo: pickPreferredTitulo("", safeTitulo),
         pdfUrls: [abs],
       });
     }
@@ -101,7 +100,6 @@ function extractEditais(html) {
     const existing = byNumero.get(parent);
     if (existing) {
       if (!existing.pdfUrls.includes(abs)) existing.pdfUrls.push(abs);
-      existing.titulo = pickPreferredTitulo(existing.titulo, text);
     } else {
       byNumero.set(parent, {
         titulo: `Edital ${parent}`,
@@ -112,10 +110,7 @@ function extractEditais(html) {
 
   const editais = [];
   for (const [numero, v] of byNumero.entries()) {
-    let titulo = String(v.titulo || `Edital ${numero}`).slice(0, 400);
-    if (isSupplementTitle(titulo)) {
-      titulo = `Edital ${numero}`;
-    }
+    let titulo = buildEditalTitulo({ linkText: v.titulo, numero, fonte: "funcap" });
     editais.push({
       numero,
       titulo,

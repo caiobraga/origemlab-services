@@ -2,6 +2,7 @@ import * as cheerio from "cheerio";
 import { fetchWithScraperAgent } from "./fetchAgent.mjs";
 import { filterEditaisCurrentYear } from "./yearFilter.mjs";
 import {
+  buildEditalTitulo,
   extractNumeroFromLinkText,
   extractParentEditalNumero,
   isSupplementTitle,
@@ -82,13 +83,13 @@ function extractEditaisFromHtml(html) {
       continue;
     }
 
+    const safeTitulo = buildEditalTitulo({ linkText: text, numero, fonte: "fapac" });
     const existing = byNumero.get(numero);
     if (existing) {
       if (!existing.pdfUrls.includes(l.href)) existing.pdfUrls.push(l.href);
-      if (!supplement) existing.titulo = pickPreferredTitulo(existing.titulo, text);
+      if (!supplement) existing.titulo = pickPreferredTitulo(existing.titulo, safeTitulo);
     } else {
-      const titulo = supplement ? `Edital ${numero}` : text || `Edital ${numero}`;
-      byNumero.set(numero, { titulo: pickPreferredTitulo("", titulo), pdfUrls: [l.href] });
+      byNumero.set(numero, { titulo: pickPreferredTitulo("", safeTitulo), pdfUrls: [l.href] });
     }
   }
 
@@ -105,8 +106,7 @@ function extractEditaisFromHtml(html) {
 
   const editais = [];
   for (const [numero, v] of byNumero.entries()) {
-    let titulo = String(v.titulo || `Edital ${numero}`).slice(0, 400);
-    if (isSupplementTitle(titulo)) titulo = `Edital ${numero}`;
+    const titulo = buildEditalTitulo({ linkText: v.titulo, numero, fonte: "fapac" });
     editais.push({
       numero,
       titulo,

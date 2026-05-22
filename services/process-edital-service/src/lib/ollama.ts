@@ -156,4 +156,3 @@ export async function ollamaEmbed(input: string): Promise<number[]> {
     attempts: parseInt(process.env.OLLAMA_FETCH_RETRIES || "3", 10) || 3,
   });
 }
-

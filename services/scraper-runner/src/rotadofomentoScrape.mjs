@@ -2,6 +2,8 @@ import * as cheerio from "cheerio";
 import { fetchWithScraperAgent } from "./fetchAgent.mjs";
 import { filterEditaisCurrentYear } from "./yearFilter.mjs";
 import { describeFetchError } from "./httpFetch.mjs";
+import { isJunkPdfUrl } from "./editalListScrape.mjs";
+import { normalizePdfUrl, resolvePdfFetchUrl } from "./pdfUrlResolve.mjs";
 
 const BASE_URL = "https://rotadofomento.org";
 const EDITAIS_BASE = `${BASE_URL}/editais`;
@@ -102,10 +104,11 @@ function extractPdfUrlsFromHtml(html) {
   const maybePush = (raw) => {
     const href = String(raw || "").trim();
     if (!href) return;
-    const abs = absoluteUrl(href);
+    const abs = resolvePdfFetchUrl(absoluteUrl(href));
     if (!abs) return;
     const lower = abs.toLowerCase();
-    if (lower.includes(".pdf")) urls.push(abs);
+    if (!lower.includes(".pdf") || isJunkPdfUrl(abs)) return;
+    urls.push(abs);
   };
   $("a[href]").each((_, el) => maybePush($(el).attr("href")));
   $("iframe,embed,object").each((_, el) => maybePush($(el).attr("src")));

@@ -219,4 +219,3 @@ jobs:
           echo "Stack ${STACK_NAME} updated; ServiceImage=${IMAGE_URI}"
 
           bash .github/scripts/ecs-force-rollout-after-cfn.sh "${STACK_NAME}" "${ORCH}"
-

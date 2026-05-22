@@ -1,7 +1,14 @@
-import { describeFetchError, isTransientFetchError } from "./fetchError.mjs";
+import { describeFetchError, isTransientFetchError, isUnreachableNetworkError } from "./fetchError.mjs";
+import { ollamaFetch } from "./ollamaHttp.mjs";
+import { getOllamaBaseUrl, getOllamaEmbedModel } from "./ollamaResolve.mjs";
 
 function ollamaBaseUrl() {
-  return (process.env.OLLAMA_BASE_URL || "http://localhost:11434").replace(/\/$/, "");
+  return getOllamaBaseUrl();
+}
+
+function embedTimeoutMs() {
+  const n = parseInt(process.env.OLLAMA_EMBED_TIMEOUT_MS || process.env.OLLAMA_TIMEOUT_MS || "120000", 10);
+  return Number.isFinite(n) && n > 0 ? Math.min(n, 600_000) : 120_000;
 }
 
 function embedFetchRetries() {
@@ -30,20 +37,33 @@ async function embedWithOllama(texts) {
   const base = ollamaBaseUrl();
   const url = `${base}/api/embed`;
   const input = texts.length === 1 ? texts[0] : texts;
-  const model = process.env.OLLAMA_EMBED_MODEL || "mxbai-embed-large";
+  const model = getOllamaEmbedModel();
   const body = { model, input };
   const dim = embedDimensions();
   if (dim != null && dim > 0) body.dimensions = dim;
 
   const attempts = embedFetchRetries();
   let last;
+  const timeoutMs = embedTimeoutMs();
   for (let i = 0; i < attempts; i++) {
     try {
-      const res = await fetch(url, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      });
+      const controller = new AbortController();
+      const t = setTimeout(() => controller.abort(), timeoutMs);
+      let res;
+      try {
+        res = await ollamaFetch(
+          url,
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(body),
+            signal: controller.signal,
+          },
+          timeoutMs,
+        );
+      } finally {
+        clearTimeout(t);
+      }
       if (!res.ok) throw new Error(`Ollama embed: ${res.status} ${(await res.text()).slice(0, 500)}`);
       const data = await res.json();
       return data.embeddings || [];
@@ -56,7 +76,7 @@ async function embedWithOllama(texts) {
           : e instanceof Error
             ? e
             : new Error(String(e));
-      if (i >= attempts - 1 || !isTransientFetchError(wrapped)) throw wrapped;
+      if (i >= attempts - 1 || !isTransientFetchError(wrapped) || isUnreachableNetworkError(wrapped)) throw wrapped;
       const delay = 1500 * (i + 1);
       console.warn(`⚠️ ollama embed: retry ${i + 1}/${attempts} em ${delay}ms — ${wrapped.message}`);
       await new Promise((r) => setTimeout(r, delay));

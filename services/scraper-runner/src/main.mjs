@@ -18,9 +18,16 @@ import { scrapeFapespaCurrentYear } from "./fapespaScrape.mjs";
 import { scrapeFapesqCurrentYear } from "./fapesqScrape.mjs";
 import { scrapeFapitecCurrentYear } from "./fapitecScrape.mjs";
 import { scrapeFaptCurrentYear } from "./faptScrape.mjs";
+import { scrapeCnpqCurrentYear } from "./cnpqScrape.mjs";
+import { scrapeFapemigCurrentYear } from "./fapemigScrape.mjs";
+import { scrapeFapematCurrentYear } from "./fapematScrape.mjs";
+import { scrapeFapesCurrentYear } from "./fapesScrape.mjs";
+import { scrapeProsasCurrentYear } from "./prosasScrape.mjs";
+import { scrapeSigfapesCurrentYear } from "./sigfapesScrape.mjs";
 import { getSupabaseFromEnv, upsertEditaisAndPdfs } from "./supabaseUpsert.mjs";
 import { makeEventBase, publishDomainEvent } from "./eventbridge.mjs";
 import { loadEnv } from "./loadEnv.mjs";
+import { closePuppeteerBrowser } from "./puppeteerHtml.mjs";
 import { describeFetchError } from "./httpFetch.mjs";
 import dns from "node:dns";
 import path from "node:path";
@@ -168,6 +175,12 @@ const SOURCES = {
   fapesq: { component: "scraper.fapesq", fn: scrapeFapesqCurrentYear },
   fapitec: { component: "scraper.fapitec", fn: scrapeFapitecCurrentYear },
   fapt: { component: "scraper.fapt", fn: scrapeFaptCurrentYear },
+  cnpq: { component: "scraper.cnpq", fn: scrapeCnpqCurrentYear },
+  fapemig: { component: "scraper.fapemig", fn: scrapeFapemigCurrentYear },
+  fapemat: { component: "scraper.fapemat", fn: scrapeFapematCurrentYear },
+  fapes: { component: "scraper.fapes", fn: scrapeFapesCurrentYear },
+  prosas: { component: "scraper.prosas", fn: scrapeProsasCurrentYear },
+  sigfapes: { component: "scraper.sigfapes", fn: scrapeSigfapesCurrentYear },
 };
 
 async function runOne(source) {
@@ -288,9 +301,14 @@ export async function runScraperBatch(argv = process.argv.slice(2)) {
         console.log(`[scraper-runner] warn: failed to publish ScraperRunCompleted - ${err.message}`);
       }
     }
+    await closePuppeteerBrowser().catch(() => {});
     return { ok: true, sources: out, run_summary: summary };
   }
-  return await runOne(source);
+  try {
+    return await runOne(source);
+  } finally {
+    await closePuppeteerBrowser().catch(() => {});
+  }
 }
 
 const isDirectCliRun =

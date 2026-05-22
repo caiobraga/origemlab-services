@@ -1,4 +1,7 @@
 import { FIELD_KEYWORD_HINTS, PROCESS_EDITAL_FIELDS } from "./constants.mjs";
+import { describeFetchError, isUnreachableNetworkError } from "./fetchError.mjs";
+import { ollamaFetch } from "./ollamaHttp.mjs";
+import { getOllamaBaseUrl, getOllamaChatModel, logOllamaModelHintOnce } from "./ollamaResolve.mjs";
 
 const CONTEXTO_BUSCA_PREFIX = "[CONTEXTO PARA BUSCA — alinhado ao pipeline process-edital-info]";
 
@@ -15,13 +18,27 @@ export function retrievalEmbeddingInputFromChunkContent(content) {
   return s.slice(0, Math.min(s.length, 4096));
 }
 
-/** Lido em runtime (depois de loadEnv no main) — não usar no topo do módulo com ESM. */
 function ollamaBaseUrl() {
-  return (process.env.OLLAMA_BASE_URL || "http://localhost:11434").replace(/\/$/, "");
+  return getOllamaBaseUrl();
+}
+
+function enrichChatTimeoutMs() {
+  const n = parseInt(process.env.OLLAMA_CHAT_TIMEOUT_MS || process.env.OLLAMA_TIMEOUT_MS || "120000", 10);
+  return Number.isFinite(n) && n > 0 ? Math.min(n, 600_000) : 120_000;
+}
+
+function enrichMaxInputChars() {
+  const n = parseInt(process.env.ENRICH_MAX_INPUT_CHARS || "6000", 10);
+  return Number.isFinite(n) && n > 500 ? Math.min(n, 12000) : 6000;
+}
+
+function enrichNumPredict() {
+  const n = parseInt(process.env.ENRICH_NUM_PREDICT || "512", 10);
+  return Number.isFinite(n) && n > 64 ? Math.min(n, 2048) : 512;
 }
 
 function chatModel() {
-  return process.env.OLLAMA_CHAT_MODEL || "llama3.2:3b";
+  return getOllamaChatModel();
 }
 
 function sleep(ms) {
@@ -67,7 +84,7 @@ ${fieldsBlock}
 
 TRECHO_DO_EDITAL (índice ${chunkIndex}):
 """
-${plainChunk.slice(0, 12000)}
+${plainChunk.slice(0, Math.min(plainChunk.length, enrichMaxInputChars()))}
 """
 
 Tarefa:
@@ -82,22 +99,35 @@ Resposta APENAS neste formato JSON:
   const maxRetries = Math.max(0, parseInt(process.env.OLLAMA_CHAT_RETRIES || "2", 10) || 2);
 
   let lastErr;
+  const chatTimeoutMs = enrichChatTimeoutMs();
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     try {
-      const res = await fetch(url, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          model: chatModel(),
-          stream: false,
-          messages: [
-            { role: "system", content: system },
-            { role: "user", content: user },
-          ],
-          options: { temperature: 0.1, num_predict: 1024 },
-        }),
-      });
-      if (!res.ok) throw new Error(`Ollama chat: ${res.status} ${await res.text()}`);
+      const controller = new AbortController();
+      const t = setTimeout(() => controller.abort(), chatTimeoutMs);
+      let res;
+      try {
+        res = await ollamaFetch(
+          url,
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              model: chatModel(),
+              stream: false,
+              messages: [
+                { role: "system", content: system },
+                { role: "user", content: user },
+              ],
+              options: { temperature: 0.1, num_predict: enrichNumPredict() },
+            }),
+            signal: controller.signal,
+          },
+          chatTimeoutMs,
+        );
+      } finally {
+        clearTimeout(t);
+      }
+      if (!res.ok) throw new Error(`Ollama chat: ${res.status} ${(await res.text()).slice(0, 500)}`);
       const data = await res.json();
       const msg = data?.message?.content ?? data?.response ?? "";
       const parsed = parseJsonLoose(msg);
@@ -133,20 +163,33 @@ Resposta APENAS neste formato JSON:
       return { embeddingText, embeddingRetrievalText, enrichment, skipped: false };
     } catch (e) {
       lastErr = e;
+      if (isUnreachableNetworkError(e)) break;
       await sleep(300 * (attempt + 1));
     }
   }
 
-  const errMsg = lastErr instanceof Error ? lastErr.message : String(lastErr);
-  console.warn(`      [enrich] falhou chunk ${chunkIndex}: ${errMsg}`);
-  if (/memory|system memory|GiB|requires more/i.test(errMsg)) {
-    console.warn(
-      "      [enrich] Dica: modelo de chat grande demais para a RAM. Experimente: OLLAMA_CHAT_MODEL=llama3.2:3b (ou phi3:mini), ou ENRICH_CHUNKS=0",
+  const errMsg =
+    lastErr instanceof Error
+      ? lastErr.message === "fetch failed" || lastErr.message?.startsWith("fetch failed")
+        ? `Ollama chat (${ollamaBaseUrl()}): ${describeFetchError(lastErr)}`
+        : lastErr.message
+      : String(lastErr);
+  if (chunkIndex === 0 || chunkIndex % 10 === 0) {
+    console.warn(`      [enrich] falhou chunk ${chunkIndex}: ${errMsg}`);
+  }
+  if (chunkIndex === 0 && isUnreachableNetworkError(lastErr)) {
+    logOllamaModelHintOnce(
+      `      [enrich] Ollama inacessível em ${ollamaBaseUrl()} — verifique OLLAMA_BASE_URL / OLLAMA_BASE_URL_LOCAL`,
     );
   }
-  if (/404.*not found/i.test(errMsg)) {
-    console.warn(
-      `      [enrich] Dica: em ${ollamaBaseUrl()} faz pull do modelo: ollama pull ${chatModel()}`,
+  if (/memory|system memory|GiB|requires more/i.test(errMsg)) {
+    logOllamaModelHintOnce(
+      "      [enrich] Dica: modelo de chat grande demais para a RAM. Use OLLAMA_CHAT_MODEL=qwen2.5:3b-instruct-q4_K_M ou ENRICH_CHUNKS=0",
+    );
+  }
+  if (/404.*not found|model.*not found/i.test(errMsg)) {
+    logOllamaModelHintOnce(
+      `      [enrich] Modelo de chat ausente. Ajuste OLLAMA_CHAT_MODEL no .env ou: ollama pull ${chatModel()}`,
     );
   }
   return {
@@ -159,5 +202,16 @@ Resposta APENAS neste formato JSON:
 }
 
 export function enrichDelayMs() {
-  return Math.max(0, parseInt(process.env.CHUNK_ENRICH_DELAY_MS || "50", 10) || 0);
+  return Math.max(0, parseInt(process.env.CHUNK_ENRICH_DELAY_MS || "0", 10) || 0);
+}
+
+export function enrichConcurrency() {
+  const n = parseInt(process.env.ENRICH_CONCURRENCY || "4", 10);
+  return Number.isFinite(n) ? Math.max(1, Math.min(16, n)) : 4;
+}
+
+/** 0 = sem limite; só enriquece os primeiros N chunks (resto vai como texto puro). */
+export function enrichMaxChunksPerPdf() {
+  const n = parseInt(process.env.ENRICH_MAX_CHUNKS_PER_PDF || "0", 10);
+  return Number.isFinite(n) && n > 0 ? n : 0;
 }

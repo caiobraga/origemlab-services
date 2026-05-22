@@ -21,7 +21,7 @@ function absoluteUrl(href) {
   }
 }
 
-async function fetchHtml(url, timeoutMs) {
+async function fetchHtmlOnce(url, timeoutMs) {
   const controller = new AbortController();
   let t;
   try {
@@ -45,6 +45,22 @@ async function fetchHtml(url, timeoutMs) {
   } finally {
     if (t) clearTimeout(t);
   }
+}
+
+async function fetchHtml(url, timeoutMs) {
+  const retries = Number(process.env.PLATAFORMA_FETCH_RETRIES || "2") || 2;
+  let lastErr;
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      return await fetchHtmlOnce(url, timeoutMs);
+    } catch (e) {
+      lastErr = e;
+      const msg = e instanceof Error ? e.message : String(e);
+      if (!/aborted|timeout|fetch failed/i.test(msg) || attempt >= retries) break;
+      await new Promise((r) => setTimeout(r, 600 * (attempt + 1)));
+    }
+  }
+  throw lastErr;
 }
 
 async function getCategoryLinks(timeoutMs, maxCategorias) {
@@ -118,27 +134,39 @@ function extractChamadasFromCategoryPage(html, categoryUrl, categoryName) {
 }
 
 export async function scrapePlataformaInovacaoCurrentYear() {
-  const timeoutMs = Number(process.env.PLATAFORMA_TIMEOUT_MS || "20000") || 20000;
+  const timeoutMs = Number(process.env.PLATAFORMA_TIMEOUT_MS || "90000") || 90000;
   const maxCategorias = Number(process.env.PLATAFORMA_MAX_CATEGORIAS || "0") || 0;
   const delay = (ms) => new Promise((r) => setTimeout(r, ms));
 
   const categories = await getCategoryLinks(timeoutMs, maxCategorias);
   const all = [];
   const seenTitulo = new Set();
+  const failed = [];
 
   for (const cat of categories) {
     await delay(300);
-    const html = await fetchHtml(cat.url, timeoutMs);
-    const editais = extractChamadasFromCategoryPage(html, cat.url, cat.title);
-    for (const e of editais) {
-      const key = (e.titulo || "").slice(0, 200);
-      if (key && !seenTitulo.has(key)) {
-        seenTitulo.add(key);
-        all.push(e);
+    try {
+      const html = await fetchHtml(cat.url, timeoutMs);
+      const editais = extractChamadasFromCategoryPage(html, cat.url, cat.title);
+      for (const e of editais) {
+        const key = (e.titulo || "").slice(0, 200);
+        if (key && !seenTitulo.has(key)) {
+          seenTitulo.add(key);
+          all.push(e);
+        }
       }
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      failed.push({ url: cat.url, error: msg });
+      console.warn(`[scraper.plataforma-inovacao] categoria ignorada (${cat.title}): ${msg}`);
     }
+  }
+
+  if (failed.length && all.length === 0) {
+    throw new Error(
+      `Todas as categorias falharam (${failed.length}). Ex.: ${failed[0]?.error || "unknown"}`,
+    );
   }
 
   return filterEditaisCurrentYear(all);
 }
-
