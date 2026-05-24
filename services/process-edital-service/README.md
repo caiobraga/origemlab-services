@@ -16,7 +16,9 @@ Replica o fluxo do script **`api:process-edital-info`**: percorre editais no Sup
 - **Gravação parcial:** Se o erro (ex. timeout) ocorrer **a meio** do loop de campos, o serviço tenta **`update`** com os campos **já** extraídos (`⚠️ Gravação parcial` no log), para não perder trabalho antes de um `✅ atualizado`.
 - Ordenação por volume de chunks: RPC `process_edital_editais_com_document_chunks` — aplicar `sql/20260513_process_edital_editais_com_document_chunks.sql` ou `PROCESS_EDITAL_SKIP_CHUNK_ORDER_RPC=1` para desligar temporariamente.
 
-**Paralelismo (por task ECS):** `PROCESS_EDITAL_CONCURRENCY` (editais em paralelo, default **2**) e `PROCESS_EDITAL_FIELD_CONCURRENCY` (campos por edital, default **2**). Com concorrência > 1, `DELAY_BETWEEN_EDITAIS_MS` default **0**. Ajuste conforme capacidade do Ollama (2×2 ≈ até 4 generates + embeds simultâneos por edital × N editais).
+**Fluxo por campo:** (1) **top-k** por similaridade de embedding — se resposta útil, **para**; (2) **varredura do documento** (`chunkscan`) — lotes sequenciais na ordem de leitura, mesma pergunta, até achar resposta ou esgotar chunks (timeout num lote → próximo lote); (3) janelas espalhadas só com `PROCESS_EDITAL_USE_WINDOWS=1` (legado).
+
+**NLB:** `PROCESS_EDITAL_FULLDOC_BATCH_*` controla tamanho dos lotes na varredura (default 3 chunks / ~4500 chars).
 
 Mais opções: bloco **process-edital-service** em [`.env.example`](../../.env.example).
 

@@ -30,8 +30,11 @@ Se não puder alterar IAM: abra manualmente no console **EC2 → Security Groups
 | `OLLAMA_EMBED_MODEL` | não | `mxbai-embed-large` |
 | `OLLAMA_SERVICE_STACK_NAME` | não | `origemlab-ollama-service` |
 | `OLLAMA_SERVER_PUBLIC_ACCESS_CIDR` | não | `0.0.0.0/0` (reutilizada para SG da porta 11434) |
-| `OLLAMA_SERVICE_TASK_CPU` | não | `4096` |
-| `OLLAMA_SERVICE_TASK_MEMORY` | não | `8192` |
+| `OLLAMA_SERVICE_TASK_CPU` | não | `8192` (antes `4096`; subir se `/api/generate` >60s) |
+| `OLLAMA_SERVICE_TASK_MEMORY` | não | `16384` (par mínimo com 8192 CPU) |
+| `OLLAMA_NUM_PARALLEL` | não | `1` (evita fila/OOM em CPU) |
+| `OLLAMA_MAX_LOADED_MODELS` | não | `2` (chat + embed) |
+| `OLLAMA_KEEP_ALIVE` | não | `24h` (modelo permanece carregado) |
 | `OLLAMA_SERVICE_NLB_SCHEME` | não | `internet-facing` (`internal` só VPC) |
 
 ## Depois do deploy

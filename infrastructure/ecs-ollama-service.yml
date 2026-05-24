@@ -36,10 +36,28 @@ Parameters:
     Default: "mxbai-embed-large"
   TaskCpu:
     Type: String
-    Default: "4096"
+    Default: "8192"
+    Description: "Fargate vCPU; generate lento em 4096 — recomendado 8192+"
   TaskMemory:
     Type: String
-    Default: "8192"
+    Default: "16384"
+    Description: "Fargate RAM MiB; par 8192 CPU → mín. 16384"
+  OllamaNumParallel:
+    Type: Number
+    Default: 1
+    MinValue: 1
+    MaxValue: 4
+    Description: "Pedidos generate simultâneos; 1 evita fila/OOM em CPU"
+  OllamaMaxLoadedModels:
+    Type: Number
+    Default: 2
+    MinValue: 1
+    MaxValue: 4
+    Description: "Chat + embed carregados em RAM"
+  OllamaKeepAlive:
+    Type: String
+    Default: "24h"
+    Description: "Evita unload do modelo entre chamadas (ex. 24h, -1)"
   DesiredCount:
     Type: Number
     Default: 1
@@ -166,6 +184,12 @@ Resources:
           Environment:
             - Name: OLLAMA_HOST
               Value: "0.0.0.0:11434"
+            - Name: OLLAMA_NUM_PARALLEL
+              Value: !Ref OllamaNumParallel
+            - Name: OLLAMA_MAX_LOADED_MODELS
+              Value: !Ref OllamaMaxLoadedModels
+            - Name: OLLAMA_KEEP_ALIVE
+              Value: !Ref OllamaKeepAlive
             - Name: OLLAMA_CHAT_MODEL
               Value: !Ref OllamaChatModel
             - Name: OLLAMA_EMBED_MODEL

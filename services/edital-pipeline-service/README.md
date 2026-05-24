@@ -34,13 +34,15 @@ Variáveis GitHub recomendadas (Ollama ECS partilhado):
 
 | Variável | Sugestão | Efeito |
 |----------|----------|--------|
-| `OLLAMA_MAX_CONTEXT_CHARS` | `10000` (default) | cada `/api/generate` leva menos texto |
-| `OLLAMA_MODEL` | `gemma2:2b` (default) | chat mais rápido em CPU/Fargate |
-| `PROCESS_EDITAL_TOP_K` | `20`–`30` | menos chunks no top-k |
-| `PROCESS_EDITAL_WINDOW_CHARS` | `8000`–`10000` | janelas menores no fallback |
+| `OLLAMA_SERVICE_TASK_CPU` / `MEMORY` | `8192` / `16384` | deploy do **ollama-service** (não deste stack) |
+| `OLLAMA_GENERATE_TIMEOUT_MS` | `900000` | margem por chamada (local: não usar `180000`) |
+| `OLLAMA_MAX_CONTEXT_CHARS` | `10000` | teto global; por lote usa `MAX_FIELD_CONTEXT_CHARS` |
+| `PROCESS_EDITAL_TOP_K` | `40` | top-k global (evitar `10`) |
+| `PROCESS_EDITAL_TOP_K_TIMELINE_ESTIMADA` | `70` | cronograma em editais grandes |
+| `PROCESS_EDITAL_FULLDOC_MAX_BATCHES` | `50` | evita 200+ lotes sequenciais |
+| `PROCESS_EDITAL_USE_WINDOWS` | `1` | fallback por janelas |
 | `PROCESS_EDITAL_CONCURRENCY` | `1` | 1 edital de cada vez |
 | `PROCESS_EDITAL_FIELD_CONCURRENCY` | `1` | 1 campo de cada vez |
-| `OLLAMA_GENERATE_TIMEOUT_MS` | `900000` | mantém margem para prompts grandes |
 
 O `capContextForModel()` já trunca ao `OLLAMA_MAX_CONTEXT_CHARS`; top-k empacota por score até esse teto. Redeploy do **edital-pipeline** após mudar variáveis (task definition).
 

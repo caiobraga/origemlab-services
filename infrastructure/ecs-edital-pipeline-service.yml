@@ -52,6 +52,29 @@ Parameters:
   OllamaMaxContextChars:
     Type: Number
     Default: 10000
+  ProcessEditalTopK:
+    Type: Number
+    Default: 40
+    Description: "PROCESS_EDITAL_TOP_K global (timeline usa TOP_K_TIMELINE_ESTIMADA)"
+  ProcessEditalTopKTimelineEstimada:
+    Type: Number
+    Default: 70
+    Description: "Top-k para timeline_estimada (cronograma)"
+  ProcessEditalFulldocMaxBatches:
+    Type: Number
+    Default: 50
+    Description: "Máx. lotes na varredura sequencial; 0 = sem limite"
+  ProcessEditalFulldocChunkScan:
+    Type: Number
+    Default: 1
+    Description: "1 = varredura full-doc; 0 = só top-k + janelas"
+  ProcessEditalUseWindows:
+    Type: Number
+    Default: 1
+    Description: "1 = fallback por janelas após top-k"
+  ProcessEditalGenerateDelayMs:
+    Type: Number
+    Default: 800
   ProcessEditalLimit:
     Type: Number
     Default: 0
@@ -182,6 +205,18 @@ Resources:
               Value: !Ref OllamaEmbedTimeoutMs
             - Name: OLLAMA_MAX_CONTEXT_CHARS
               Value: !Ref OllamaMaxContextChars
+            - Name: PROCESS_EDITAL_TOP_K
+              Value: !Ref ProcessEditalTopK
+            - Name: PROCESS_EDITAL_TOP_K_TIMELINE_ESTIMADA
+              Value: !Ref ProcessEditalTopKTimelineEstimada
+            - Name: PROCESS_EDITAL_FULLDOC_MAX_BATCHES
+              Value: !Ref ProcessEditalFulldocMaxBatches
+            - Name: PROCESS_EDITAL_FULLDOC_CHUNK_SCAN
+              Value: !Ref ProcessEditalFulldocChunkScan
+            - Name: PROCESS_EDITAL_USE_WINDOWS
+              Value: !Ref ProcessEditalUseWindows
+            - Name: PROCESS_EDITAL_GENERATE_DELAY_MS
+              Value: !Ref ProcessEditalGenerateDelayMs
             - Name: PROCESS_EDITAL_LIMIT
               Value: !Ref ProcessEditalLimit
             - Name: DELAY_BETWEEN_EDITAIS_MS

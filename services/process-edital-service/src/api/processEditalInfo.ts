@@ -5,13 +5,22 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { createSupabase } from "../lib/supabase";
-import { getMaxContextChars, ollamaEmbed, ollamaGenerate } from "../lib/ollama";
+import {
+  getMaxContextChars,
+  getMaxFieldContextChars,
+  getOllamaGenerateTimeoutMs,
+  getTopKPackMaxChars,
+  isOllamaTimeout,
+  ollamaEmbed,
+  ollamaGenerate,
+} from "../lib/ollama";
+import { initOllamaBaseUrl } from "../lib/ollamaResolve";
 import { makeEventBase, publishDomainEvent } from "../lib/eventbridge";
 import { mapPool, readConcurrencyEnv } from "../lib/concurrency.js";
 
 type FieldEvidence = {
-  /** `topk` = contexto por similaridade de embeddings; `bulk` = amostra/junção de chunks sem score; `window` = varredura por janelas sobre o texto plano. */
-  source: "topk" | "window" | "bulk";
+  /** `topk` = similaridade; `chunkscan` = lotes sequenciais do documento; `bulk`/`window` = legado. */
+  source: "topk" | "chunkscan" | "window" | "bulk";
   snippet: string;
   /** IDs das linhas em `documents` cujo texto entrou no contexto / janela usada na extração. */
   document_ids?: string[];
@@ -529,15 +538,115 @@ function extractionValueIsUseful(field: FieldKey, value: any): boolean {
     return Boolean(n && n.trim());
   }
   if (field === "timeline_estimada") {
-    if (value === null) return false;
-    const v = typeof value === "object" && value && "fases" in value ? value : null;
-    if (!v || !Array.isArray((v as any).fases)) return false;
-    return (v as any).fases.length > 0;
+    return timelineValueIsUseful(value);
   }
   if (field === "is_researcher" || field === "is_company") return typeof value === "boolean";
   if (value === null) return false;
   if (typeof value === "string") return Boolean(String(value).trim());
   return false;
+}
+
+const DATE_IN_TEXT =
+  /\d{1,2}\s*\/\s*\d{1,2}\s*\/\s*\d{2,4}|\d{4}-\d{2}-\d{2}|\d{1,2}\s+de\s+\w+\s+de\s+\d{4}/i;
+
+function timelinePhaseHasDateSignal(fase: any): boolean {
+  if (!fase || typeof fase !== "object") return false;
+  for (const key of ["data_inicio", "data_fim", "prazo"] as const) {
+    const t = String((fase as any)[key] ?? "").trim();
+    if (!t || t.toLowerCase() === "null") continue;
+    if (DATE_IN_TEXT.test(t)) return true;
+  }
+  return false;
+}
+
+/** Cronograma útil: ≥1 fase com data no texto; evita só “Inscrição” vazia + checklist de documentos. */
+function timelineValueIsUseful(value: any): boolean {
+  if (value === null) return false;
+  const v = typeof value === "object" && value && "fases" in value ? value : null;
+  if (!v || !Array.isArray((v as any).fases)) return false;
+  const fases = (v as any).fases as any[];
+  if (fases.length === 0) return false;
+  const withDate = fases.filter(timelinePhaseHasDateSignal);
+  if (withDate.length > 0) return true;
+  const withNamedPhase = fases.filter((f) => {
+    const nome = String(f?.nome || "").trim();
+    if (nome.length < 4) return false;
+    if (/documentos?\s+necess|anexos?\s+obrigat|checklist|modelo\s+de/i.test(nome)) return false;
+    const prazo = String(f?.prazo || "").trim();
+    return prazo.length > 0 && prazo.toLowerCase() !== "null";
+  });
+  return withNamedPhase.length >= 2;
+}
+
+function normalizeTimelineEstimada(raw: unknown): { fases: any[] } | null {
+  if (raw == null) return null;
+  let obj: any = raw;
+  if (typeof raw === "string") {
+    const parsed = safeJsonParse(raw);
+    if (parsed && typeof parsed === "object") obj = parsed;
+    else return null;
+  }
+  const fases = Array.isArray(obj?.fases) ? obj.fases : null;
+  if (!fases?.length) return null;
+
+  const cleaned = fases
+    .map((f: any) => {
+      const nome = String(f?.nome || "").trim().slice(0, 200);
+      if (!nome) return null;
+      const prazo = f?.prazo != null && String(f.prazo).trim() ? String(f.prazo).trim().slice(0, 120) : null;
+      const status = f?.status != null && String(f.status).trim() ? String(f.status).trim().slice(0, 40) : null;
+      const data_inicio =
+        f?.data_inicio != null && String(f.data_inicio).trim() ? String(f.data_inicio).trim().slice(0, 32) : null;
+      const data_fim =
+        f?.data_fim != null && String(f.data_fim).trim() ? String(f.data_fim).trim().slice(0, 32) : null;
+      return { nome, prazo, status, data_inicio, data_fim };
+    })
+    .filter(Boolean);
+
+  if (cleaned.length === 0) return null;
+  const out = { fases: cleaned };
+  return timelineValueIsUseful(out) ? out : null;
+}
+
+function windowScanLargePlainThreshold(): number {
+  return parseInt(process.env.PROCESS_EDITAL_WINDOW_LARGE_PLAIN_CHARS || "200000", 10) || 200_000;
+}
+
+/** Evita 20× generate em PDF de 400k+ chars quando top-k já rodou (causa timeout no NLB). */
+function shouldRunWindowScan(
+  field: FieldKey,
+  opts: { topkFinished: boolean; topkTimedOut: boolean; plainLen: number },
+): boolean {
+  if (String(process.env.PROCESS_EDITAL_SKIP_WINDOWS || "").trim() === "1") {
+    console.log(`  🪟 campo=${field}: janelas desligadas (PROCESS_EDITAL_SKIP_WINDOWS=1)`);
+    return false;
+  }
+
+  if (opts.topkTimedOut) {
+    console.log(
+      `  🪟 campo=${field}: top-k interrompido por timeout — janelas permitidas (fallback, máx. reduzido)`,
+    );
+    return true;
+  }
+
+  if ((field === "is_researcher" || field === "is_company") && opts.topkFinished) {
+    console.log(`  🪟 campo=${field}: pulando janelas (boolean; top-k concluiu sem resposta útil)`);
+    return false;
+  }
+
+  const skipAfterTopk = String(process.env.PROCESS_EDITAL_SKIP_WINDOWS_AFTER_TOPK ?? "1").trim() !== "0";
+  const large = windowScanLargePlainThreshold();
+  if (skipAfterTopk && opts.topkFinished && opts.plainLen >= large) {
+    const allowHuge = field === "timeline_estimada" || field === "prazo_inscricao";
+    if (!allowHuge) {
+      console.log(
+        `  🪟 campo=${field}: pulando janelas (plain≥${large} e top-k concluiu sem resposta; timeline/prazo ainda usam janelas)`,
+      );
+      return false;
+    }
+  }
+
+  return true;
 }
 
 function snippetFromContext(ctx: string): string {
@@ -626,25 +735,51 @@ function computeSpreadWindowStarts(plainLen: number, windowSize: number, maxW: n
 }
 
 /** Limita janelas em PDFs enormes (ex. 500k+ chars) para não estourar timeout do Ollama por campo. */
-function resolveWindowScanParams(plainLen: number): {
+function resolveWindowScanParams(
+  plainLen: number,
+  field: FieldKey,
+  opts?: { topkFinished?: boolean; topkTimedOut?: boolean },
+): {
   windowSize: number;
   overlap: number;
   maxWindows: number;
   useSpreadWindows: boolean;
 } {
-  let windowSize = Math.max(2000, parseInt(process.env.PROCESS_EDITAL_WINDOW_CHARS || "12000", 10) || 12000);
-  let overlap = Math.max(0, parseInt(process.env.PROCESS_EDITAL_WINDOW_OVERLAP || "2000", 10) || 2000);
-  let maxWindows = Math.max(1, parseInt(process.env.PROCESS_EDITAL_WINDOW_MAX_WINDOWS || "80", 10) || 80);
+  let windowSize = Math.max(
+    2000,
+    Math.min(
+      getMaxFieldContextChars(),
+      parseInt(process.env.PROCESS_EDITAL_WINDOW_CHARS || String(Math.min(8000, getMaxFieldContextChars())), 10) || 8000,
+    ),
+  );
+  let overlap = Math.max(0, parseInt(process.env.PROCESS_EDITAL_WINDOW_OVERLAP || "1000", 10) || 1000);
+  let maxWindows = Math.max(1, parseInt(process.env.PROCESS_EDITAL_WINDOW_MAX_WINDOWS || "24", 10) || 24);
   let useSpreadWindows = false;
 
-  const largePlain = parseInt(process.env.PROCESS_EDITAL_WINDOW_LARGE_PLAIN_CHARS || "200000", 10) || 200_000;
+  const largePlain = windowScanLargePlainThreshold();
   const hugePlain = parseInt(process.env.PROCESS_EDITAL_WINDOW_HUGE_PLAIN_CHARS || "400000", 10) || 400_000;
+
+  if (opts?.topkFinished) {
+    maxWindows = Math.min(
+      maxWindows,
+      parseInt(process.env.PROCESS_EDITAL_WINDOW_MAX_AFTER_TOPK || "6", 10) || 6,
+    );
+  }
+
+  if (opts?.topkTimedOut) {
+    const afterTimeout = parseInt(process.env.PROCESS_EDITAL_WINDOW_MAX_AFTER_TOPK_TIMEOUT || "3", 10) || 3;
+    maxWindows = Math.min(maxWindows, afterTimeout);
+    if (field === "is_researcher" || field === "is_company") {
+      const boolMax = parseInt(process.env.PROCESS_EDITAL_WINDOW_MAX_BOOLEAN_AFTER_TIMEOUT || "2", 10) || 2;
+      maxWindows = Math.min(maxWindows, boolMax);
+    }
+  }
 
   if (plainLen >= hugePlain) {
     useSpreadWindows = true;
     maxWindows = Math.min(
       maxWindows,
-      parseInt(process.env.PROCESS_EDITAL_WINDOW_MAX_WINDOWS_HUGE || "12", 10) || 12,
+      parseInt(process.env.PROCESS_EDITAL_WINDOW_MAX_WINDOWS_HUGE || "8", 10) || 8,
     );
     windowSize = Math.min(
       windowSize,
@@ -654,21 +789,17 @@ function resolveWindowScanParams(plainLen: number): {
   } else if (plainLen >= largePlain) {
     maxWindows = Math.min(
       maxWindows,
-      parseInt(process.env.PROCESS_EDITAL_WINDOW_MAX_WINDOWS_LARGE || "28", 10) || 28,
+      parseInt(process.env.PROCESS_EDITAL_WINDOW_MAX_WINDOWS_LARGE || "10", 10) || 10,
     );
-    windowSize = Math.min(windowSize, parseInt(process.env.PROCESS_EDITAL_WINDOW_CHARS_LARGE || "12000", 10) || 12_000);
+    windowSize = Math.min(windowSize, parseInt(process.env.PROCESS_EDITAL_WINDOW_CHARS_LARGE || "8000", 10) || 8000);
     useSpreadWindows = true;
-    maxWindows = Math.min(
-      maxWindows,
-      parseInt(process.env.PROCESS_EDITAL_WINDOW_MAX_WINDOWS_LARGE || "20", 10) || 20,
-    );
   }
 
   return { windowSize, overlap, maxWindows, useSpreadWindows };
 }
 
 function capContextForModel(context: string): string {
-  const maxCtx = getMaxContextChars();
+  const maxCtx = getMaxFieldContextChars();
   const t = String(context || "");
   if (t.length <= maxCtx) return t;
   return t.slice(0, maxCtx);
@@ -678,6 +809,7 @@ async function tryWindowScan(
   field: FieldKey,
   edital: EditalInfo,
   rowsAll: any[],
+  opts?: { topkFinished?: boolean; topkTimedOut?: boolean },
 ): Promise<{ value: any; rawJson: string; modelOutput: string; evidence: FieldEvidence | null }> {
   const sampled = subsampleRowsForWindowScan(rowsAll);
   if (sampled.truncated) {
@@ -691,7 +823,10 @@ async function tryWindowScan(
     return { value: null, rawJson: "", modelOutput: "", evidence: null };
   }
 
-  const { windowSize, overlap, maxWindows: maxW, useSpreadWindows } = resolveWindowScanParams(plain.length);
+  const { windowSize, overlap, maxWindows: maxW, useSpreadWindows } = resolveWindowScanParams(plain.length, field, {
+    topkFinished: opts?.topkFinished,
+    topkTimedOut: opts?.topkTimedOut,
+  });
   const maxCtx = getMaxContextChars();
   const effectiveWin = Math.min(windowSize, maxCtx);
 
@@ -709,7 +844,16 @@ async function tryWindowScan(
     if (!slice.trim()) return false;
 
     console.log(`  🪟 janela ${wi + 1}/${maxW} pos=${start}-${end} ctx_chars=${slice.length}`);
-    const ex = await extractFieldValue(field, edital, slice);
+    let ex: { value: any; rawJson: string; modelOutput: string };
+    try {
+      ex = await extractFieldValue(field, edital, slice);
+    } catch (e) {
+      if (isOllamaTimeout(e)) {
+        console.warn(`  🪟 janela ${wi + 1}: timeout no generate — abortando janelas restantes deste campo`);
+        throw e;
+      }
+      throw e;
+    }
     lastOut = ex;
     if (extractionValueIsUseful(field, ex.value)) {
       const docIds = documentIdsOverlappingPlainRange(spans, start, end);
@@ -728,27 +872,286 @@ async function tryWindowScan(
     return false;
   };
 
+  const runWindowLoop = async (runOne: (wi: number) => Promise<false | { value: any; rawJson: string; modelOutput: string; evidence: FieldEvidence }>) => {
+    for (let wi = 0; wi < maxW; wi++) {
+      try {
+        const hit = await runOne(wi);
+        if (hit && typeof hit === "object" && "value" in hit) return hit;
+      } catch (e) {
+        if (isOllamaTimeout(e)) {
+          return { value: null, rawJson: lastOut.rawJson, modelOutput: lastOut.modelOutput, evidence: null };
+        }
+        throw e;
+      }
+    }
+    return null;
+  };
+
   if (useSpreadWindows) {
     const starts = computeSpreadWindowStarts(plain.length, effectiveWin, maxW);
-    for (let wi = 0; wi < starts.length; wi++) {
-      const hit = await runWindow(starts[wi]!, wi);
-      if (hit && typeof hit === "object" && "value" in hit) return hit;
-    }
+    const hit = await runWindowLoop(async (wi) => {
+      if (wi >= starts.length) return false;
+      return (await runWindow(starts[wi]!, wi)) as false | { value: any; rawJson: string; modelOutput: string; evidence: FieldEvidence };
+    });
+    if (hit) return hit;
   } else {
     let start = 0;
-    let wi = 0;
-    while (start < plain.length && wi < maxW) {
-      const hit = await runWindow(start, wi);
-      if (hit && typeof hit === "object" && "value" in hit) return hit;
+    const hit = await runWindowLoop(async (wi) => {
+      if (start >= plain.length) return false;
+      const result = await runWindow(start, wi);
+      if (result && typeof result === "object" && "value" in result) return result;
       const end = Math.min(plain.length, start + effectiveWin);
-      if (end >= plain.length) break;
+      if (end >= plain.length) return false;
       const nextStart = end - overlap;
       start = nextStart <= start ? start + 1 : nextStart;
-      wi += 1;
-    }
+      return false;
+    });
+    if (hit) return hit;
   }
 
   return { value: null, rawJson: lastOut.rawJson, modelOutput: lastOut.modelOutput, evidence: null };
+}
+
+function topKSplitEnabled(): boolean {
+  return String(process.env.PROCESS_EDITAL_TOPK_SPLIT ?? "1").trim() !== "0";
+}
+
+function topKBatchConfig(): { chunksPerBatch: number; maxCharsPerBatch: number; maxBatches: number } {
+  const chunksPerBatch = parseInt(process.env.PROCESS_EDITAL_TOPK_BATCH_CHUNKS || "3", 10);
+  const maxCharsPerBatch = parseInt(process.env.PROCESS_EDITAL_TOPK_BATCH_CHARS || "", 10);
+  const maxBatches = parseInt(process.env.PROCESS_EDITAL_TOPK_MAX_BATCHES || "5", 10);
+  return {
+    chunksPerBatch: Number.isFinite(chunksPerBatch) ? Math.max(1, Math.min(12, chunksPerBatch)) : 3,
+    maxCharsPerBatch:
+      Number.isFinite(maxCharsPerBatch) && maxCharsPerBatch > 0
+        ? maxCharsPerBatch
+        : getMaxFieldContextChars(),
+    maxBatches: Number.isFinite(maxBatches) ? Math.max(1, Math.min(20, maxBatches)) : 5,
+  };
+}
+
+function fullDocChunkScanEnabled(): boolean {
+  return String(process.env.PROCESS_EDITAL_FULLDOC_CHUNK_SCAN ?? "1").trim() !== "0";
+}
+
+function docScanBatchConfig(): { chunksPerBatch: number; maxCharsPerBatch: number; maxBatches: number } {
+  const chunksRaw = parseInt(
+    process.env.PROCESS_EDITAL_FULLDOC_BATCH_CHUNKS || process.env.PROCESS_EDITAL_TOPK_BATCH_CHUNKS || "3",
+    10,
+  );
+  const charsRaw = parseInt(
+    process.env.PROCESS_EDITAL_FULLDOC_BATCH_CHARS || process.env.PROCESS_EDITAL_TOPK_BATCH_CHARS || "",
+    10,
+  );
+  const maxRaw = parseInt(process.env.PROCESS_EDITAL_FULLDOC_MAX_BATCHES || "0", 10);
+  return {
+    chunksPerBatch: Number.isFinite(chunksRaw) ? Math.max(1, Math.min(12, chunksRaw)) : 3,
+    maxCharsPerBatch: Number.isFinite(charsRaw) && charsRaw > 0 ? charsRaw : getMaxFieldContextChars(),
+    maxBatches: Number.isFinite(maxRaw) && maxRaw > 0 ? maxRaw : 0,
+  };
+}
+
+function buildDocumentChunkBatches(rowsAll: any[]): Array<{ rows: any[]; text: string; batchIndex: number }> {
+  const { chunksPerBatch, maxCharsPerBatch, maxBatches } = docScanBatchConfig();
+  const sorted = sortRowsByChunkIndex(
+    rowsAll.filter((r) => typeof r?.content === "string" && String(r.content).trim().length > 0),
+  );
+  const batches: Array<{ rows: any[]; text: string; batchIndex: number }> = [];
+  let batchRows: any[] = [];
+  let batchPieces: string[] = [];
+
+  const flush = () => {
+    if (!batchRows.length) return;
+    let text = batchPieces.join("\n\n");
+    if (text.length > maxCharsPerBatch) text = text.slice(0, maxCharsPerBatch);
+    batches.push({ rows: [...batchRows], text, batchIndex: batches.length });
+    batchRows = [];
+    batchPieces = [];
+  };
+
+  for (const r of sorted) {
+    if (maxBatches > 0 && batches.length >= maxBatches) break;
+
+    const piece = formatChunkBlock(r);
+    const joinedLen = batchPieces.length ? batchPieces.join("\n\n").length + 2 + piece.length : piece.length;
+    if (batchRows.length >= chunksPerBatch || (batchRows.length > 0 && joinedLen > maxCharsPerBatch)) {
+      flush();
+      if (maxBatches > 0 && batches.length >= maxBatches) break;
+    }
+    batchRows.push(r);
+    batchPieces.push(piece);
+  }
+  if (maxBatches === 0 || batches.length < maxBatches) {
+    flush();
+  }
+
+  return maxBatches > 0 ? batches.slice(0, maxBatches) : batches;
+}
+
+async function tryFullDocumentChunkScan(
+  field: FieldKey,
+  edital: EditalInfo,
+  rowsAll: any[],
+): Promise<{ value: any; rawJson: string; modelOutput: string; evidence: FieldEvidence | null }> {
+  const batches = buildDocumentChunkBatches(rowsAll);
+  if (batches.length === 0) {
+    return { value: null, rawJson: "", modelOutput: "", evidence: null };
+  }
+
+  const cfg = docScanBatchConfig();
+  console.log(
+    `  📄 varredura documento campo=${field} lotes=${batches.length} chunks=${rowsAll.length} (${cfg.chunksPerBatch} chunks/lote, ordem leitura)`,
+  );
+
+  let lastEx: { value: any; rawJson: string; modelOutput: string } = {
+    value: null,
+    rawJson: "",
+    modelOutput: "",
+  };
+
+  for (const batch of batches) {
+    const bi = batch.batchIndex + 1;
+    console.log(
+      `  📄 doc lote ${bi}/${batches.length} campo=${field} chunks=${batch.rows.length} ctx_chars=${batch.text.length}`,
+    );
+    try {
+      const ex = await extractFieldValue(field, edital, batch.text);
+      lastEx = ex;
+      if (extractionValueIsUseful(field, ex.value)) {
+        const ci =
+          typeof batch.rows[0]?.metadata?.chunk_index === "number" ? batch.rows[0].metadata.chunk_index : null;
+        return {
+          value: ex.value,
+          rawJson: ex.rawJson,
+          modelOutput: ex.modelOutput,
+          evidence: {
+            source: "chunkscan",
+            snippet: snippetFromContext(batch.text),
+            chunk_index: ci,
+            ...docIdsEvidenceFields(documentIdsFromRows(batch.rows)),
+          },
+        };
+      }
+    } catch (e) {
+      if (isOllamaTimeout(e)) {
+        console.warn(`  📄 doc lote ${bi}/${batches.length}: timeout — próximo lote`);
+        continue;
+      }
+      throw e;
+    }
+  }
+
+  return {
+    value: extractionValueIsUseful(field, lastEx.value) ? lastEx.value : null,
+    rawJson: lastEx.rawJson,
+    modelOutput: lastEx.modelOutput,
+    evidence: null,
+  };
+}
+
+/** Ranqueia chunks por cosseno (mesma lógica do top-k único). */
+function rankRowsByQueryEmbedding(rows: any[], queryEmbedding: number[], k: number): Array<{ r: any; score: number }> {
+  const scored = rows
+    .map((r) => {
+      const emb = embeddingVectorForTopKCompare(r);
+      if (!emb) return null;
+      return { r, score: cosineSimilarity(queryEmbedding, emb) };
+    })
+    .filter(Boolean) as Array<{ r: any; score: number }>;
+  scored.sort((a, b) => b.score - a.score);
+  return scored.slice(0, Math.max(5, Math.min(300, k)));
+}
+
+/**
+ * Várias chamadas /api/generate com poucos chunks cada (NLB: 1× prompt grande estoura timeout).
+ * Para no primeiro lote que devolver valor útil.
+ */
+async function tryTopKInBatches(
+  field: FieldKey,
+  edital: EditalInfo,
+  rowsEmb: any[],
+  queryEmbedding: number[],
+  kOverride: number,
+): Promise<{
+  value: any;
+  rawJson: string;
+  modelOutput: string;
+  evidence: FieldEvidence | null;
+  lastEx: { value: any; rawJson: string; modelOutput: string };
+  timedOut: boolean;
+} | null> {
+  const { chunksPerBatch, maxCharsPerBatch, maxBatches } = topKBatchConfig();
+  const ranked = rankRowsByQueryEmbedding(rowsEmb, queryEmbedding, kOverride);
+  if (ranked.length === 0) return null;
+
+  let lastEx: { value: any; rawJson: string; modelOutput: string } = {
+    value: null,
+    rawJson: "",
+    modelOutput: "",
+  };
+  let timedOut = false;
+
+  const totalBatches = Math.min(maxBatches, Math.ceil(ranked.length / chunksPerBatch));
+  for (let b = 0; b < totalBatches; b++) {
+    const slice = ranked.slice(b * chunksPerBatch, b * chunksPerBatch + chunksPerBatch);
+    if (slice.length === 0) break;
+
+    const pieces = slice.map((s) => formatChunkBlock(s.r));
+    let text = pieces.join("\n\n");
+    if (text.length > maxCharsPerBatch) text = text.slice(0, maxCharsPerBatch);
+
+    console.log(
+      `  🔝 top-k lote ${b + 1}/${totalBatches} campo=${field} chunks=${slice.length} ctx_chars=${text.length} (max/batch=${maxCharsPerBatch})`,
+    );
+
+    let ex: { value: any; rawJson: string; modelOutput: string };
+    try {
+      ex = await extractFieldValue(field, edital, text);
+    } catch (e) {
+      if (isOllamaTimeout(e)) {
+        timedOut = true;
+        console.warn(
+          `  🔝 top-k lote ${b + 1}: timeout (${getOllamaGenerateTimeoutMs()}ms) — próximo lote top-k`,
+        );
+        continue;
+      }
+      throw e;
+    }
+    lastEx = ex;
+    if (extractionValueIsUseful(field, ex.value)) {
+      const rowsUsed = slice.map((s) => s.r);
+      return {
+        value: ex.value,
+        rawJson: ex.rawJson,
+        modelOutput: ex.modelOutput,
+        evidence: {
+          source: "topk",
+          snippet: snippetFromContext(text),
+          ...docIdsEvidenceFields(documentIdsFromRows(rowsUsed)),
+        },
+        lastEx,
+        timedOut: false,
+      };
+    }
+  }
+
+  return {
+    value: null,
+    rawJson: lastEx.rawJson,
+    modelOutput: lastEx.modelOutput,
+    evidence: null,
+    lastEx,
+    timedOut,
+  };
+}
+
+function documentIdsFromRows(rows: any[]): string[] {
+  const ids: string[] = [];
+  for (const r of rows) {
+    const id = r?.id != null ? String(r.id) : "";
+    if (id) ids.push(id);
+  }
+  return [...new Set(ids)];
 }
 
 async function extractFieldWithTopKThenWindows(
@@ -761,58 +1164,110 @@ async function extractFieldWithTopKThenWindows(
 ): Promise<{ value: any; rawJson: string; modelOutput: string; evidence: FieldEvidence | null }> {
   let lastEx: { value: any; rawJson: string; modelOutput: string } = { value: null, rawJson: "", modelOutput: "" };
 
-  /** Houve contexto top-k não vazio (embeddings + chunks) — se a extração vier null/inútil, o próximo passo são só as janelas, sem “bulk” no meio. */
-  let topkContextAttempted = false;
+  /** Top-k concluiu (modelo respondeu, mesmo null) — pula bulk no meio. */
+  let topkFinished = false;
+  let topkTimedOut = false;
 
   // 1) Top-k (similaridade) quando há embeddings
   if (embCount > 0) {
     const query = buildFieldQuery(field, edital);
-    const qEmb = await ollamaEmbed(query);
-    const top = buildTopKContext(rowsEmb, qEmb, { label: field, kOverride: fieldTopK(field) });
-    if (hasNonEmptyContextText(top.text)) {
-      topkContextAttempted = true;
-      console.log(`  🔝 top-k campo=${field} ctx_chars=${top.text.length} (${top.sourceLabel})`);
-      const ex = await extractFieldValue(field, edital, top.text);
-      lastEx = ex;
-      if (extractionValueIsUseful(field, ex.value)) {
-        return {
-          value: ex.value,
-          rawJson: ex.rawJson,
-          modelOutput: ex.modelOutput,
-          evidence: {
-            source: "topk",
-            snippet: snippetFromContext(top.text),
-            ...docIdsEvidenceFields(top.documentIds),
-          },
-        };
+    let qEmb: number[];
+    try {
+      qEmb = await ollamaEmbed(query);
+    } catch (e) {
+      if (isOllamaTimeout(e)) {
+        console.warn(`  🔝 top-k campo=${field}: embed timeout — pulando top-k`);
+      } else {
+        throw e;
+      }
+      qEmb = [];
+    }
+    const k = fieldTopK(field);
+
+    if (qEmb.length > 0) {
+      if (topKSplitEnabled()) {
+        const batched = await tryTopKInBatches(field, edital, rowsEmb, qEmb, k);
+        if (batched !== null) {
+          lastEx = batched.lastEx;
+          if (batched.timedOut) {
+            topkTimedOut = true;
+          } else {
+            topkFinished = true;
+          }
+          if (extractionValueIsUseful(field, batched.value) && batched.evidence) {
+            return {
+              value: batched.value,
+              rawJson: batched.rawJson,
+              modelOutput: batched.modelOutput,
+              evidence: batched.evidence,
+            };
+          }
+        }
+      } else {
+        const top = buildTopKContext(rowsEmb, qEmb, { label: field, kOverride: k });
+        if (hasNonEmptyContextText(top.text)) {
+          topkFinished = true;
+          console.log(`  🔝 top-k campo=${field} ctx_chars=${top.text.length} (${top.sourceLabel})`);
+          const ex = await extractFieldValue(field, edital, top.text);
+          lastEx = ex;
+          if (extractionValueIsUseful(field, ex.value)) {
+            return {
+              value: ex.value,
+              rawJson: ex.rawJson,
+              modelOutput: ex.modelOutput,
+              evidence: {
+                source: "topk",
+                snippet: snippetFromContext(top.text),
+                ...docIdsEvidenceFields(top.documentIds),
+              },
+            };
+          }
+        }
       }
     }
   }
 
-  // 2) Amostra “bulk” só quando não houve tentativa top-k com texto (ex.: sem embeddings ou top vazio)
-  if (!topkContextAttempted && hasNonEmptyContextText(ctxAll.text)) {
-    const ex = await extractFieldValue(field, edital, ctxAll.text);
-    lastEx = ex;
-    if (extractionValueIsUseful(field, ex.value)) {
+  // 2) Top-k não devolveu resposta útil → varredura sequencial de todo o documento em lotes de chunks
+  if (fullDocChunkScanEnabled() && rowsAll.length > 0) {
+    const scanned = await tryFullDocumentChunkScan(field, edital, rowsAll);
+    lastEx = {
+      value: scanned.value,
+      rawJson: scanned.rawJson || lastEx.rawJson,
+      modelOutput: scanned.modelOutput || lastEx.modelOutput,
+    };
+    if (extractionValueIsUseful(field, scanned.value) && scanned.evidence) {
       return {
-        value: ex.value,
-        rawJson: ex.rawJson,
-        modelOutput: ex.modelOutput,
-        evidence: {
-          source: "bulk",
-          snippet: snippetFromContext(ctxAll.text),
-          ...docIdsEvidenceFields(ctxAll.documentIds),
-        },
+        value: scanned.value,
+        rawJson: scanned.rawJson,
+        modelOutput: scanned.modelOutput,
+        evidence: scanned.evidence,
       };
     }
   }
 
-  // 3) Janelas deslizantes sobre o texto plano de todos os chunks (após top-k inútil/null ou bulk inútil)
+  // 3) Legado: janelas espalhadas (desligado por default — use PROCESS_EDITAL_USE_WINDOWS=1)
+  if (String(process.env.PROCESS_EDITAL_USE_WINDOWS || "").trim() !== "1") {
+    return {
+      value: extractionValueIsUseful(field, lastEx.value) ? lastEx.value : null,
+      rawJson: lastEx.rawJson,
+      modelOutput: lastEx.modelOutput,
+      evidence: null,
+    };
+  }
+
   const plainCharsTotal = estimateRowsPlainChars(rowsAll);
+  if (!shouldRunWindowScan(field, { topkFinished, topkTimedOut, plainLen: plainCharsTotal })) {
+    return {
+      value: extractionValueIsUseful(field, lastEx.value) ? lastEx.value : null,
+      rawJson: lastEx.rawJson,
+      modelOutput: lastEx.modelOutput,
+      evidence: null,
+    };
+  }
   console.log(
-    `  🪟 campo=${field}: janelas | plain_chars_total=${plainCharsTotal} chunks=${rowsAll.length} topk_ctx_tentado=${topkContextAttempted}`,
+    `  🪟 campo=${field}: janelas | plain_chars_total=${plainCharsTotal} chunks=${rowsAll.length} topk_finished=${topkFinished} topk_timeout=${topkTimedOut}`,
   );
-  const win = await tryWindowScan(field, edital, rowsAll);
+  const win = await tryWindowScan(field, edital, rowsAll, { topkFinished, topkTimedOut });
   if (extractionValueIsUseful(field, win.value)) return win;
 
   return {
@@ -964,7 +1419,7 @@ function buildTopKContext(
   const k = Math.max(5, Math.min(300, kOverride));
   const top = scored.slice(0, k);
 
-  const maxChars = getMaxContextChars();
+  const maxChars = getTopKPackMaxChars();
   const packOrder = String(process.env.PROCESS_EDITAL_CONTEXT_PACK_ORDER || "score").toLowerCase();
   const useReadingOrder = packOrder === "reading";
 
@@ -1053,9 +1508,10 @@ async function extractFieldValue(
 ): Promise<{ value: any; rawJson: string; modelOutput: string }> {
   const ctx = capContextForModel(context);
   // retry once if JSON is invalid / missing key
+  const maxAttempts = Math.max(1, parseInt(process.env.PROCESS_EDITAL_JSON_RETRIES || "1", 10) || 1);
   let attempt = 0;
   let last: { value: any; rawJson: string; modelOutput: string } | null = null;
-  while (attempt < 2) {
+  while (attempt < maxAttempts) {
     const out = await generateStrictJson(field, edital, ctx);
     last = out;
     const parsed = safeJsonParse(out.rawJson);
@@ -1101,7 +1557,8 @@ async function extractFieldValue(
   if (t === "boolean") return { value: typeof value === "boolean" ? value : null, rawJson, modelOutput };
   if (t === "json") {
     if (field === "timeline_estimada") {
-      return { value: typeof value === "object" ? value : null, rawJson, modelOutput };
+      const normalized = normalizeTimelineEstimada(value);
+      return { value: normalized, rawJson, modelOutput };
     }
     if (field === "valor_projeto") {
       const normalized =
@@ -1328,22 +1785,32 @@ async function processOneEdital(
         console.log(`\n  ${tag} 🧠 campo=${f} — sem texto nem embedding; pulando.`);
         return null;
       }
-      const { value, rawJson, modelOutput, evidence } = await extractFieldWithTopKThenWindows(
-        f,
-        edital,
-        rows,
-        rowsAll,
-        rows.length,
-        ctxAll,
-      );
-      const evLabel = evidence ? `evidence=${evidence.source}` : "evidence=nenhuma";
-      console.log(`\n  ${tag} 🧠 campo=${f} ${evLabel}`);
-      console.log(`  ${tag} 🧾 resposta_modelo (raw preview):\n${previewContext(modelOutput, 900)}`);
-      console.log(`  ${tag} 🧾 json_extraido:\n${rawJson || "(vazio)"}`);
-      console.log(
-        `  ${tag} ✅ resultado_${f}: ${value === null ? "null" : typeof value === "string" ? value.slice(0, 180) : JSON.stringify(value).slice(0, 400)}`,
-      );
-      return { f, value, evidence };
+      try {
+        const { value, rawJson, modelOutput, evidence } = await extractFieldWithTopKThenWindows(
+          f,
+          edital,
+          rows,
+          rowsAll,
+          rows.length,
+          ctxAll,
+        );
+        const evLabel = evidence ? `evidence=${evidence.source}` : "evidence=nenhuma";
+        console.log(`\n  ${tag} 🧠 campo=${f} ${evLabel}`);
+        console.log(`  ${tag} 🧾 resposta_modelo (raw preview):\n${previewContext(modelOutput, 900)}`);
+        console.log(`  ${tag} 🧾 json_extraido:\n${rawJson || "(vazio)"}`);
+        console.log(
+          `  ${tag} ✅ resultado_${f}: ${value === null ? "null" : typeof value === "string" ? value.slice(0, 180) : JSON.stringify(value).slice(0, 400)}`,
+        );
+        return { f, value, evidence };
+      } catch (e) {
+        if (isOllamaTimeout(e)) {
+          console.warn(
+            `  ${tag} ⚠️ campo=${f}: timeout Ollama (${getOllamaGenerateTimeoutMs()}ms) — campo ignorado; edital continua`,
+          );
+          return { f, value: null, evidence: undefined };
+        }
+        throw e;
+      }
     };
 
     const fieldOutcomes =
@@ -1411,12 +1878,14 @@ async function processOneEdital(
 }
 
 export async function runProcessBatch(): Promise<{ hadWork: boolean }> {
+  await initOllamaBaseUrl();
+
   const supabase = createSupabase();
 
   const limitRaw = parseInt(process.env.PROCESS_EDITAL_LIMIT || "0", 10);
   const limit = Number.isFinite(limitRaw) && limitRaw > 0 ? limitRaw : Infinity;
-  const editalConcurrency = readConcurrencyEnv("PROCESS_EDITAL_CONCURRENCY", 2, 6);
-  const fieldConcurrency = readConcurrencyEnv("PROCESS_EDITAL_FIELD_CONCURRENCY", 2, 4);
+  const editalConcurrency = readConcurrencyEnv("PROCESS_EDITAL_CONCURRENCY", 1, 6);
+  const fieldConcurrency = readConcurrencyEnv("PROCESS_EDITAL_FIELD_CONCURRENCY", 1, 4);
   const delayDefault = editalConcurrency > 1 ? "0" : "2000";
   const delayBetweenEditaisMs = Math.max(
     0,

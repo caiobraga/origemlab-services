@@ -8,7 +8,7 @@ import { getMaxContextChars, ollamaGenerate } from "../lib/ollama";
 import { mapPool, readConcurrencyEnv } from "../lib/concurrency.js";
 
 type FieldEvidence = {
-  source: "topk" | "window" | "bulk";
+  source: "topk" | "chunkscan" | "window" | "bulk";
   snippet: string;
   document_ids?: string[];
   document_id?: string | null;
@@ -307,16 +307,6 @@ function sortDocumentRows(rows: any[]): any[] {
   });
 }
 
-function joinDocumentRows(rows: any[]): string {
-  return rows
-    .map((r: any) => {
-      const fid = String(r.file_id || r.metadata?.file_id || r.id).slice(0, 12);
-      const ci = typeof r?.metadata?.chunk_index === "number" ? r.metadata.chunk_index : "?";
-      return `--- Documento ${fid} / chunk ${ci} ---\n${String(r.content).trim()}`;
-    })
-    .join("\n\n");
-}
-
 async function fetchRawDocumentRows(
   supabase: SupabaseClient,
   editalId: string,
@@ -327,17 +317,61 @@ async function fetchRawDocumentRows(
   return raw.filter((r: any) => typeof r?.content === "string" && r.content.trim().length > 0);
 }
 
-function hasNonEmptyContextText(s: string): boolean {
-  return Boolean(String(s || "").trim());
+function formatChunkBlock(r: any): string {
+  const fid = String(r.file_id || r.metadata?.file_id || r.id).slice(0, 12);
+  const ci = typeof r?.metadata?.chunk_index === "number" ? r.metadata.chunk_index : "?";
+  return `--- Documento ${fid} / chunk ${ci} ---\n${String(r.content).trim()}`;
 }
 
-function buildWideAuditContextFromRows(rows: any[]): string {
-  const joined = joinDocumentRows(sortDocumentRows(rows));
-  const cap = Math.max(
-    4000,
-    parseInt(process.env.VALIDATE_AUDIT_MAX_CONTEXT_CHARS || String(getMaxContextChars()), 10) || getMaxContextChars(),
+function auditBatchConfig(): { chunksPerBatch: number; maxCharsPerBatch: number } {
+  const chunksRaw = parseInt(
+    process.env.VALIDATE_AUDIT_BATCH_CHUNKS || process.env.PROCESS_EDITAL_TOPK_BATCH_CHUNKS || "3",
+    10,
   );
-  return joined.length > cap ? joined.slice(0, cap) : joined;
+  const charsRaw = parseInt(
+    process.env.VALIDATE_AUDIT_BATCH_CHARS || process.env.PROCESS_EDITAL_TOPK_BATCH_CHARS || "",
+    10,
+  );
+  return {
+    chunksPerBatch: Number.isFinite(chunksRaw) ? Math.max(1, Math.min(12, chunksRaw)) : 3,
+    maxCharsPerBatch:
+      Number.isFinite(charsRaw) && charsRaw > 0 ? charsRaw : getMaxAuditContextChars(),
+  };
+}
+
+function buildAuditChunkBatches(rows: any[]): Array<{ rows: any[]; text: string; batchIndex: number }> {
+  const { chunksPerBatch, maxCharsPerBatch } = auditBatchConfig();
+  const sorted = sortDocumentRows(
+    rows.filter((r) => typeof r?.content === "string" && String(r.content).trim().length > 0),
+  );
+  const batches: Array<{ rows: any[]; text: string; batchIndex: number }> = [];
+  let batchRows: any[] = [];
+  let batchPieces: string[] = [];
+
+  const flush = () => {
+    if (!batchRows.length) return;
+    let text = batchPieces.join("\n\n");
+    if (text.length > maxCharsPerBatch) text = text.slice(0, maxCharsPerBatch);
+    batches.push({ rows: [...batchRows], text, batchIndex: batches.length });
+    batchRows = [];
+    batchPieces = [];
+  };
+
+  for (const r of sorted) {
+    const piece = formatChunkBlock(r);
+    const joinedLen = batchPieces.length ? batchPieces.join("\n\n").length + 2 + piece.length : piece.length;
+    if (batchRows.length >= chunksPerBatch || (batchRows.length > 0 && joinedLen > maxCharsPerBatch)) {
+      flush();
+    }
+    batchRows.push(r);
+    batchPieces.push(piece);
+  }
+  flush();
+  return batches;
+}
+
+function auditChunkScanEnabled(): boolean {
+  return String(process.env.VALIDATE_AUDIT_CHUNK_SCAN ?? "1").trim() !== "0";
 }
 
 function makeAuditPrompt(
@@ -386,15 +420,14 @@ function makeAuditPrompt(
   ].join("\n");
 }
 
-async function callAuditForField(
-  field: FieldKey,
-  edital: EditalRow,
-  before: any,
-  evidence: FieldEvidence | undefined,
-  wideCtx: string,
-): Promise<{ ok: boolean; value: any; raw: string; audit: { decision: string; reason: string } }> {
-  const prompt = makeAuditPrompt(field, edital, before, evidence);
-  const rawText = extractJsonBlock(await ollamaGenerate([prompt, "", "DOCUMENTO:", wideCtx || "(vazio)"].join("\n")));
+type AuditResult = {
+  ok: boolean;
+  value: any;
+  raw: string;
+  audit: { decision: string; reason: string; source?: string };
+};
+
+function parseAuditResponse(field: FieldKey, rawText: string, source?: string): AuditResult {
   const json = safeJsonParse(rawText);
   const audit = json && typeof json === "object" ? (json as any)._audit : null;
   const decision = typeof audit?.decision === "string" ? String(audit.decision).toLowerCase() : "";
@@ -407,7 +440,7 @@ async function callAuditForField(
       ok: false,
       value: null,
       raw: rawText,
-      audit: { decision: decision || "unknown", reason: reason || "missing_field_in_json" },
+      audit: { decision: decision || "unknown", reason: reason || "missing_field_in_json", source },
     };
   }
 
@@ -417,8 +450,94 @@ async function callAuditForField(
     ok,
     value: checked.normalized,
     raw: rawText,
-    audit: { decision: decision || (checked.ok ? "accept" : "unknown"), reason },
+    audit: { decision: decision || (checked.ok ? "accept" : "unknown"), reason, source },
   };
+}
+
+function isAuditDecisionFinal(result: AuditResult): boolean {
+  if (!result.ok) return false;
+  const d = result.audit.decision;
+  return d === "accept" || d === "replace" || d === "reject";
+}
+
+async function runSingleAuditCall(
+  field: FieldKey,
+  edital: EditalRow,
+  before: any,
+  evidence: FieldEvidence | undefined,
+  docCtx: string,
+  source: string,
+): Promise<AuditResult> {
+  const prompt = makeAuditPrompt(field, edital, before, evidence);
+  const rawText = extractJsonBlock(
+    await ollamaGenerate([prompt, "", "DOCUMENTO:", docCtx || "(vazio)"].join("\n")),
+  );
+  return parseAuditResponse(field, rawText, source);
+}
+
+async function callAuditForField(
+  field: FieldKey,
+  edital: EditalRow,
+  before: any,
+  evidence: FieldEvidence | undefined,
+  rowsRaw: any[],
+): Promise<AuditResult> {
+  const cap = getMaxAuditContextChars();
+  let last: AuditResult = {
+    ok: false,
+    value: null,
+    raw: "",
+    audit: { decision: "unknown", reason: "no_audit_attempt" },
+  };
+
+  const snippet = evidence?.snippet?.trim();
+  if (snippet) {
+    const ctx = snippet.length > cap ? snippet.slice(0, cap) : snippet;
+    console.log(`  ✓ audit ${field}: trecho evidência ctx_chars=${ctx.length}`);
+    try {
+      const r = await runSingleAuditCall(field, edital, before, evidence, ctx, "evidence");
+      last = r;
+      if (isAuditDecisionFinal(r)) return r;
+    } catch (e) {
+      if (isOllamaTimeout(e)) {
+        console.warn(`  ✓ audit ${field}: timeout no trecho de evidência — varredura documento`);
+      } else {
+        throw e;
+      }
+    }
+  }
+
+  if (!auditChunkScanEnabled()) {
+    return last;
+  }
+
+  const batches = buildAuditChunkBatches(rowsRaw);
+  if (batches.length === 0) return last;
+
+  const cfg = auditBatchConfig();
+  console.log(
+    `  ✓ audit ${field}: varredura documento lotes=${batches.length} chunks=${rowsRaw.length} (${cfg.chunksPerBatch}/lote)`,
+  );
+
+  for (const batch of batches) {
+    const bi = batch.batchIndex + 1;
+    console.log(
+      `  ✓ audit lote ${bi}/${batches.length} campo=${field} chunks=${batch.rows.length} ctx_chars=${batch.text.length}`,
+    );
+    try {
+      const r = await runSingleAuditCall(field, edital, before, evidence, batch.text, "chunkscan");
+      last = r;
+      if (isAuditDecisionFinal(r)) return r;
+    } catch (e) {
+      if (isOllamaTimeout(e)) {
+        console.warn(`  ✓ audit lote ${bi}/${batches.length}: timeout — próximo lote`);
+        continue;
+      }
+      throw e;
+    }
+  }
+
+  return last;
 }
 
 async function polishFreeTextField(
@@ -603,11 +722,10 @@ async function validateOneEdital(
 
   const fileIds = await fetchEditalPdfKeys(supabase, edital.id);
   const rowsRaw = await fetchRawDocumentRows(supabase, edital.id, fileIds);
-  const wideCtx = buildWideAuditContextFromRows(rowsRaw);
   const chunksTotal = rowsRaw.length;
   const withEmbReport = rowsRaw.filter((r: any) => rowHasAnyEmbeddingRow(r)).length;
 
-  if (!hasNonEmptyContextText(wideCtx)) {
+  if (rowsRaw.length === 0 || !rowsRaw.some((r: any) => typeof r?.content === "string" && r.content.trim().length > 0)) {
     return { inserted: false, reasons: ["sem_contexto_documents"] };
   }
 
@@ -618,7 +736,7 @@ async function validateOneEdital(
   const skipPolish = String(process.env.VALIDATE_SKIP_POLISH || "").trim() === "1";
 
   const reportFields: Record<string, any> = {};
-  const fieldConcurrency = readConcurrencyEnv("VALIDATE_FIELD_CONCURRENCY", 2, 4);
+  const fieldConcurrency = readConcurrencyEnv("VALIDATE_FIELD_CONCURRENCY", 1, 4);
 
   type FieldOutcome = {
     field: FieldKey;
@@ -744,9 +862,10 @@ async function validateOneEdital(
       file_ids: fileIds.length,
       chunks: chunksTotal,
       chunks_with_embedding: withEmbReport,
-      audit_ctx_chars: wideCtx.length,
+      audit_ctx_chars_per_call: getMaxAuditContextChars(),
+      audit_batches: buildAuditChunkBatches(rowsRaw).length,
       ollama: true,
-      pipeline: "audit_full_document_then_polish_strings",
+      pipeline: "audit_evidence_then_chunkscan_then_polish_strings",
     },
     presentable: true,
     fields: reportFields,
@@ -791,7 +910,7 @@ export async function runValidateBatch(): Promise<{ hadWork: boolean }> {
 
   console.log("🔎 validate-edital-service (Ollama-only)");
   console.log(
-    `📦 limit=${Number.isFinite(totalLimit) ? totalLimit : "∞"} batch=${batchSize} editalConcurrency=${editalConcurrency} fieldConcurrency=${readConcurrencyEnv("VALIDATE_FIELD_CONCURRENCY", 2, 4)} delayMs=${delayMs} betweenEditaisMs=${betweenEditaisMs} scope=todos_processados`,
+    `📦 limit=${Number.isFinite(totalLimit) ? totalLimit : "∞"} batch=${batchSize} editalConcurrency=${editalConcurrency} fieldConcurrency=${readConcurrencyEnv("VALIDATE_FIELD_CONCURRENCY", 1, 4)} delayMs=${delayMs} betweenEditaisMs=${betweenEditaisMs} scope=todos_processados`,
   );
 
   let ok = 0;

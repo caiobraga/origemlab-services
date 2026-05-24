@@ -1,8 +1,11 @@
 #!/bin/sh
 set -eu
 export OLLAMA_HOST="${OLLAMA_HOST:-0.0.0.0:11434}"
+export OLLAMA_NUM_PARALLEL="${OLLAMA_NUM_PARALLEL:-1}"
+export OLLAMA_MAX_LOADED_MODELS="${OLLAMA_MAX_LOADED_MODELS:-2}"
+export OLLAMA_KEEP_ALIVE="${OLLAMA_KEEP_ALIVE:-24h}"
 
-echo "Starting ollama serve on ${OLLAMA_HOST}"
+echo "Starting ollama serve on ${OLLAMA_HOST} (num_parallel=${OLLAMA_NUM_PARALLEL} max_loaded=${OLLAMA_MAX_LOADED_MODELS} keep_alive=${OLLAMA_KEEP_ALIVE})"
 ollama serve &
 OLLAMA_PID=$!
 
@@ -46,8 +49,22 @@ pull_required() {
   return 1
 }
 
+warm_chat_model() {
+  name="$1"
+  echo "Warming chat model ${name} (load weights into RAM)..."
+  if curl -sf -X POST "http://127.0.0.1:11434/api/generate" \
+    -H "content-type: application/json" \
+    -d "{\"model\":\"${name}\",\"prompt\":\"ok\",\"stream\":false,\"options\":{\"num_predict\":8}}" >/dev/null; then
+    echo "Warm-up generate ok: ${name}"
+    return 0
+  fi
+  echo "WARN: warm-up generate failed for ${name} (continuing anyway)"
+  return 0
+}
+
 if [ -n "${chat_pull}" ]; then
   pull_required "${chat_pull}" || exit 1
+  warm_chat_model "${CHAT}"
 fi
 if [ -n "${embed_pull}" ] && [ "${embed_pull}" != "${chat_pull}" ]; then
   pull_required "${embed_pull}" || exit 1

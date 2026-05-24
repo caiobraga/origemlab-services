@@ -77,6 +77,12 @@ jobs:
           OLLAMA_EMBED_TIMEOUT_MS: ${{ vars.OLLAMA_EMBED_TIMEOUT_MS }}
           PROCESS_EDITAL_OLLAMA_EMBED_TIMEOUT_MS: ${{ vars.PROCESS_EDITAL_OLLAMA_EMBED_TIMEOUT_MS }}
           OLLAMA_MAX_CONTEXT_CHARS: ${{ vars.OLLAMA_MAX_CONTEXT_CHARS }}
+          PROCESS_EDITAL_TOP_K: ${{ vars.PROCESS_EDITAL_TOP_K }}
+          PROCESS_EDITAL_TOP_K_TIMELINE_ESTIMADA: ${{ vars.PROCESS_EDITAL_TOP_K_TIMELINE_ESTIMADA }}
+          PROCESS_EDITAL_FULLDOC_MAX_BATCHES: ${{ vars.PROCESS_EDITAL_FULLDOC_MAX_BATCHES }}
+          PROCESS_EDITAL_FULLDOC_CHUNK_SCAN: ${{ vars.PROCESS_EDITAL_FULLDOC_CHUNK_SCAN }}
+          PROCESS_EDITAL_USE_WINDOWS: ${{ vars.PROCESS_EDITAL_USE_WINDOWS }}
+          PROCESS_EDITAL_GENERATE_DELAY_MS: ${{ vars.PROCESS_EDITAL_GENERATE_DELAY_MS }}
           PROCESS_EDITAL_LIMIT: ${{ vars.PROCESS_EDITAL_LIMIT }}
           DELAY_BETWEEN_EDITAIS_MS: ${{ vars.DELAY_BETWEEN_EDITAIS_MS }}
           PROCESS_EDITAL_CONCURRENCY: ${{ vars.PROCESS_EDITAL_CONCURRENCY }}
@@ -138,6 +144,30 @@ jobs:
           _ctx_chars="$(printf '%s' "${OLLAMA_MAX_CONTEXT_CHARS:-10000}" | tr -d '\r' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
           [[ "${_ctx_chars}" =~ ^[0-9]+$ ]] || _ctx_chars=10000
           OVERRIDES+=("OllamaMaxContextChars=${_ctx_chars}")
+
+          _topk="$(printf '%s' "${PROCESS_EDITAL_TOP_K:-40}" | tr -d '\r' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+          [[ "${_topk}" =~ ^[0-9]+$ ]] || _topk=40
+          OVERRIDES+=("ProcessEditalTopK=${_topk}")
+
+          _topk_tl="$(printf '%s' "${PROCESS_EDITAL_TOP_K_TIMELINE_ESTIMADA:-70}" | tr -d '\r' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+          [[ "${_topk_tl}" =~ ^[0-9]+$ ]] || _topk_tl=70
+          OVERRIDES+=("ProcessEditalTopKTimelineEstimada=${_topk_tl}")
+
+          _fd_batches="$(printf '%s' "${PROCESS_EDITAL_FULLDOC_MAX_BATCHES:-50}" | tr -d '\r' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+          [[ "${_fd_batches}" =~ ^[0-9]+$ ]] || _fd_batches=50
+          OVERRIDES+=("ProcessEditalFulldocMaxBatches=${_fd_batches}")
+
+          _fd_scan="$(printf '%s' "${PROCESS_EDITAL_FULLDOC_CHUNK_SCAN:-1}" | tr -d '\r' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+          [[ "${_fd_scan}" =~ ^[01]$ ]] || _fd_scan=1
+          OVERRIDES+=("ProcessEditalFulldocChunkScan=${_fd_scan}")
+
+          _use_win="$(printf '%s' "${PROCESS_EDITAL_USE_WINDOWS:-1}" | tr -d '\r' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+          [[ "${_use_win}" =~ ^[01]$ ]] || _use_win=1
+          OVERRIDES+=("ProcessEditalUseWindows=${_use_win}")
+
+          _gen_delay="$(printf '%s' "${PROCESS_EDITAL_GENERATE_DELAY_MS:-800}" | tr -d '\r' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+          [[ "${_gen_delay}" =~ ^[0-9]+$ ]] || _gen_delay=800
+          OVERRIDES+=("ProcessEditalGenerateDelayMs=${_gen_delay}")
 
           _timeout_eff="$(printf '%s' "${OLLAMA_TIMEOUT_MS:-600000}" | tr -d '\r' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
           [[ "${_timeout_eff}" =~ ^[0-9]+$ ]] || _timeout_eff=600000

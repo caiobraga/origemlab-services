@@ -1,5 +1,10 @@
 import { describeFetchError } from "./fetchError";
 import { ollamaFetch } from "./ollamaHttp";
+import {
+  getResolvedOllamaBaseUrl,
+  getResolvedOllamaEmbedModel,
+  getResolvedOllamaModel,
+} from "./ollamaResolve";
 import { withRetry } from "./retry";
 
 type OllamaGenerateResponse = {
@@ -40,14 +45,50 @@ export function getOllamaTimeoutMs(): number {
   return clampTimeoutMs(raw, 600_000);
 }
 
-function getOllamaGenerateTimeoutMs(): number {
+export function getOllamaGenerateTimeoutMs(): number {
   const raw = String(process.env.OLLAMA_GENERATE_TIMEOUT_MS || "").trim();
   if (raw) {
     const g = parseInt(raw, 10);
     if (Number.isFinite(g) && g > 0) return clampTimeoutMs(g, 900_000);
   }
-  // /api/generate é mais lento que embed; não herdar OLLAMA_TIMEOUT_MS=240000 do repo global.
-  return clampTimeoutMs(900_000, 900_000);
+  // NLB: fail-fast — 10 min por chamada bloqueia o lote inteiro sem garantir resposta.
+  return clampTimeoutMs(180_000, 180_000);
+}
+
+function getOllamaGenerateRetries(): number {
+  const raw = parseInt(process.env.OLLAMA_GENERATE_RETRIES || "1", 10);
+  return Number.isFinite(raw) ? Math.max(1, Math.min(3, raw)) : 1;
+}
+
+function getOllamaNumPredict(): number {
+  const raw = parseInt(process.env.OLLAMA_NUM_PREDICT || "384", 10);
+  return Number.isFinite(raw) ? Math.max(64, Math.min(2048, raw)) : 384;
+}
+
+export function isOllamaGenerateTimeout(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err);
+  return /Ollama generate/i.test(msg) && /timed out after \d+ms|fetch aborted/i.test(msg);
+}
+
+export function isOllamaEmbedTimeout(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err);
+  return /Ollama embed/i.test(msg) && /timed out after \d+ms|fetch aborted/i.test(msg);
+}
+
+export function isOllamaTimeout(err: unknown): boolean {
+  return isOllamaGenerateTimeout(err) || isOllamaEmbedTimeout(err);
+}
+
+let generateGapChain: Promise<void> = Promise.resolve();
+let lastGenerateEndMs = 0;
+
+async function waitGenerateGap(): Promise<void> {
+  const gap = parseInt(process.env.PROCESS_EDITAL_GENERATE_DELAY_MS || "800", 10) || 800;
+  generateGapChain = generateGapChain.then(async () => {
+    const wait = Math.max(0, gap - (Date.now() - lastGenerateEndMs));
+    if (wait > 0) await new Promise((r) => setTimeout(r, wait));
+  });
+  await generateGapChain;
 }
 
 function getOllamaEmbedTimeoutMs(): number {
@@ -75,6 +116,19 @@ export function getMaxContextChars(): number {
   return Number.isFinite(n) ? Math.max(2000, n) : 10_000;
 }
 
+/** Limite de contexto por chamada de extração (top-k / bulk / janela). */
+export function getMaxFieldContextChars(): number {
+  const fieldRaw = parseInt(process.env.PROCESS_EDITAL_MAX_FIELD_CONTEXT_CHARS || "", 10);
+  const fieldCap = Number.isFinite(fieldRaw) && fieldRaw > 0 ? fieldRaw : 4500;
+  return Math.min(getMaxContextChars(), Math.max(2000, fieldCap));
+}
+
+export function getTopKPackMaxChars(): number {
+  const raw = parseInt(process.env.PROCESS_EDITAL_TOPK_PACK_MAX_CHARS || "", 10);
+  if (Number.isFinite(raw) && raw > 0) return Math.min(getMaxContextChars(), raw);
+  return getMaxFieldContextChars();
+}
+
 async function ollamaGenerateOnce(prompt: string, baseUrl: string, model: string, timeoutMs: number): Promise<string> {
   const temperature = parseFloat(process.env.OLLAMA_TEMPERATURE || "0");
   const controller = new AbortController();
@@ -87,7 +141,10 @@ async function ollamaGenerateOnce(prompt: string, baseUrl: string, model: string
         model,
         prompt,
         stream: false,
-        options: { temperature: Number.isFinite(temperature) ? temperature : 0 },
+        options: {
+          temperature: Number.isFinite(temperature) ? temperature : 0,
+          num_predict: getOllamaNumPredict(),
+        },
       }),
       signal: controller.signal,
     }, timeoutMs);
@@ -106,13 +163,18 @@ async function ollamaGenerateOnce(prompt: string, baseUrl: string, model: string
 }
 
 export async function ollamaGenerate(prompt: string): Promise<string> {
+  await waitGenerateGap();
   const baseUrl = getOllamaBaseUrl();
   const model = getOllamaModel();
   const timeoutMs = getOllamaGenerateTimeoutMs();
-  return withRetry(() => ollamaGenerateOnce(prompt, baseUrl, model, timeoutMs), {
-    label: "ollama generate",
-    attempts: parseInt(process.env.OLLAMA_FETCH_RETRIES || "3", 10) || 3,
-  });
+  try {
+    return await withRetry(() => ollamaGenerateOnce(prompt, baseUrl, model, timeoutMs), {
+      label: "ollama generate",
+      attempts: getOllamaGenerateRetries(),
+    });
+  } finally {
+    lastGenerateEndMs = Date.now();
+  }
 }
 
 async function ollamaEmbedOnce(input: string, baseUrl: string, model: string, timeoutMs: number): Promise<number[]> {

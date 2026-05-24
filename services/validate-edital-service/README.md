@@ -9,7 +9,9 @@ Replica o script **`api:validate-editais-corretos`**: lê editais e documentos n
 
 ## Configuração
 
-**Obrigatório:** `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `OLLAMA_BASE_URL` (produção: `http://origemlab-ollama-nlb-312422980eebe2d0.elb.us-east-1.amazonaws.com:11434`). Modelos/timeouts e limites de lote: bloco **validate-edital-service** em [`.env.example`](../../.env.example) (`VALIDATE_EDITAIS_LIMIT`, `OLLAMA_EMBED_MODEL`, `VALIDATE_SKIP_POLISH`, etc.).
+**Obrigatório:** `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `OLLAMA_BASE_URL` (produção: NLB AWS). Modelos/timeouts e limites de lote: bloco **validate-edital-service** em [`.env.example`](../../.env.example).
+
+**Auditoria (alinhada ao process-edital):** por campo, (1) trecho de evidência da extração; (2) varredura sequencial do documento em lotes pequenos (`VALIDATE_AUDIT_BATCH_*`, default ~4500 chars); timeout num lote → próximo lote; timeout no campo → mantém valor original. Compartilha `OLLAMA_GENERATE_TIMEOUT_MS`, `OLLAMA_NUM_PREDICT`, `PROCESS_EDITAL_GENERATE_DELAY_MS` com o process-edital.
 
 ## Correr localmente
 
