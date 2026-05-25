@@ -47,8 +47,15 @@ async function fetchPdf(url, timeoutMs = 45000) {
         `PDF fetch failed: HTTP ${res.status} for ${fetchUrl}${fetchUrl !== url ? ` (original: ${url})` : ""}`,
       );
     }
+    const contentType = String(res.headers.get("content-type") || "").toLowerCase();
     const ab = await res.arrayBuffer();
-    return Buffer.from(ab);
+    const buf = Buffer.from(ab);
+    const looksLikePdf = buf.subarray(0, 1024).includes("%PDF-");
+    if (!looksLikePdf) {
+      const kind = contentType || "content-type desconhecido";
+      throw new Error(`PDF fetch failed: resposta não é PDF (${kind}, ${buf.length} bytes) for ${fetchUrl}`);
+    }
+    return buf;
   } catch (e) {
     const base = e instanceof Error ? e : new Error(String(e));
     const msg = base.message?.startsWith("PDF fetch failed:") ? base.message : describeFetchError(base);

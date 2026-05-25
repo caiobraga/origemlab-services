@@ -127,7 +127,21 @@ function normalizeValorProjetoForStorage(raw: unknown): string | null {
   return out;
 }
 
-/** Indica se o campo ainda deve passar pela extração (null, vazio, timeline vazia, boolean ausente). */
+function isNullishExtractedText(value: unknown): boolean {
+  if (value == null) return true;
+  const t = String(value).replace(/\s+/g, " ").trim().toLowerCase();
+  if (!t) return true;
+  return (
+    t === "null" ||
+    t === "undefined" ||
+    t === "não informado" ||
+    t === "nao informado" ||
+    t === "não informado pelo edital" ||
+    t === "nao informado pelo edital"
+  );
+}
+
+/** Indica se o campo ainda deve passar pela extração (null, vazio, "Não informado", timeline vazia, boolean ausente). */
 function fieldNeedsExtraction(field: FieldKey, before: any): boolean {
   if (field === "timeline_estimada" || field === "valor_projeto") {
     return !extractionValueIsUseful(field, before);
@@ -136,9 +150,7 @@ function fieldNeedsExtraction(field: FieldKey, before: any): boolean {
     return typeof before !== "boolean";
   }
   if (fieldType(field) === "string") {
-    if (before === null || before === undefined) return true;
-    if (typeof before === "string") return before.trim() === "";
-    return true;
+    return !extractionValueIsUseful(field, before);
   }
   return before === null || before === undefined;
 }
@@ -533,16 +545,16 @@ function buildPlainFullText(rows: any[]): string {
 function extractionValueIsUseful(field: FieldKey, value: any): boolean {
   if (value === undefined) return false;
   if (field === "valor_projeto") {
-    if (value === null) return false;
+    if (value === null || (typeof value === "string" && isNullishExtractedText(value))) return false;
     const n = normalizeValorProjetoForStorage(value);
-    return Boolean(n && n.trim());
+    return Boolean(n && !isNullishExtractedText(n));
   }
   if (field === "timeline_estimada") {
     return timelineValueIsUseful(value);
   }
   if (field === "is_researcher" || field === "is_company") return typeof value === "boolean";
   if (value === null) return false;
-  if (typeof value === "string") return Boolean(String(value).trim());
+  if (typeof value === "string") return !isNullishExtractedText(value);
   return false;
 }
 

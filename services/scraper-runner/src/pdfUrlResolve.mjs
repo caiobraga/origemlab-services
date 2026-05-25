@@ -10,7 +10,10 @@ export function normalizePdfUrl(url) {
   } catch {
     // ignore
   }
-  return u.replace(/%20+$/i, "").trim();
+  return u
+    .replace(/%20+$/i, "")
+    .replace(/(\.pdf)\/view(?:[?#].*)?$/i, "$1")
+    .trim();
 }
 
 /**

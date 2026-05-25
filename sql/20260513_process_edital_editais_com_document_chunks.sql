@@ -8,7 +8,7 @@ LANGUAGE sql
 STABLE
 PARALLEL SAFE
 AS $$
-  SELECT x.edital_id, COUNT(*)::bigint AS chunks
+  SELECT x.edital_id, COUNT(DISTINCT x.id)::bigint AS chunks
   FROM (
     SELECT metadata->>'edital_id' AS edital_id, d.id
     FROM public.documents d
@@ -20,13 +20,13 @@ AS $$
     SELECT ep.edital_id::text AS edital_id, d.id
     FROM public.documents d
     JOIN public.edital_pdfs ep
-      ON ep.file_id = d.file_id
-      OR (d.metadata ? 'file_id' AND ep.file_id = (d.metadata->>'file_id'))
+      ON d.file_id IN (ep.id::text, ep.file_id::text)
+      OR (d.metadata ? 'file_id' AND d.metadata->>'file_id' IN (ep.id::text, ep.file_id::text))
     WHERE NULLIF(TRIM(d.content), '') IS NOT NULL
   ) x
   WHERE x.edital_id IS NOT NULL
   GROUP BY x.edital_id
-  ORDER BY COUNT(*) DESC, x.edital_id ASC;
+  ORDER BY COUNT(DISTINCT x.id) DESC, x.edital_id ASC;
 $$;
 
 COMMENT ON FUNCTION public.process_edital_editais_com_document_chunks() IS
