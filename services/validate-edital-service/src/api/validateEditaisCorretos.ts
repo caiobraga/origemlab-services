@@ -4,7 +4,8 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { createSupabase } from "../lib/supabase";
-import { getMaxContextChars, ollamaGenerate } from "../lib/ollama";
+import { getMaxAuditContextChars, isOllamaTimeout, ollamaGenerate } from "../lib/ollama";
+import { initOllamaBaseUrl } from "../lib/ollamaResolve";
 import { mapPool, readConcurrencyEnv } from "../lib/concurrency.js";
 
 type FieldEvidence = {
@@ -341,6 +342,11 @@ function auditBatchConfig(): { chunksPerBatch: number; maxCharsPerBatch: number 
 
 function buildAuditChunkBatches(rows: any[]): Array<{ rows: any[]; text: string; batchIndex: number }> {
   const { chunksPerBatch, maxCharsPerBatch } = auditBatchConfig();
+  const maxBatchesRaw = parseInt(
+    process.env.VALIDATE_AUDIT_MAX_BATCHES || process.env.PROCESS_EDITAL_FULLDOC_MAX_BATCHES || "0",
+    10,
+  );
+  const maxBatches = Number.isFinite(maxBatchesRaw) && maxBatchesRaw > 0 ? maxBatchesRaw : 0;
   const sorted = sortDocumentRows(
     rows.filter((r) => typeof r?.content === "string" && String(r.content).trim().length > 0),
   );
@@ -358,16 +364,21 @@ function buildAuditChunkBatches(rows: any[]): Array<{ rows: any[]; text: string;
   };
 
   for (const r of sorted) {
+    if (maxBatches > 0 && batches.length >= maxBatches) break;
+
     const piece = formatChunkBlock(r);
     const joinedLen = batchPieces.length ? batchPieces.join("\n\n").length + 2 + piece.length : piece.length;
     if (batchRows.length >= chunksPerBatch || (batchRows.length > 0 && joinedLen > maxCharsPerBatch)) {
       flush();
+      if (maxBatches > 0 && batches.length >= maxBatches) break;
     }
     batchRows.push(r);
     batchPieces.push(piece);
   }
-  flush();
-  return batches;
+  if (maxBatches === 0 || batches.length < maxBatches) {
+    flush();
+  }
+  return maxBatches > 0 ? batches.slice(0, maxBatches) : batches;
 }
 
 function auditChunkScanEnabled(): boolean {
@@ -695,8 +706,9 @@ function validateFieldValue(field: FieldKey, value: any): { ok: boolean; normali
   if (t === "boolean") return { ok: typeof value === "boolean", normalized: typeof value === "boolean" ? value : null };
   if (t === "json") {
     if (field === "timeline_estimada") {
-      if (!isTimelineEstimadaSiteShapeOk(value)) return { ok: false, normalized: null };
-      return { ok: true, normalized: value };
+      const normalized = normalizeTimelineEstimada(value);
+      if (!normalized || !isTimelineEstimadaSiteShapeOk(normalized)) return { ok: false, normalized: null };
+      return { ok: true, normalized };
     }
     if (typeof value === "object" && value !== null) return { ok: true, normalized: value };
     return { ok: false, normalized: null };
@@ -762,16 +774,25 @@ async function validateOneEdital(
     }
 
     const evidence = evidenceMap[field] as FieldEvidence | undefined;
-    const audited = await callAuditForField(field, edital, before, evidence, wideCtx);
-    let finalValue = audited.ok ? audited.value : null;
+    const audited = await callAuditForField(field, edital, before, evidence, rowsRaw);
+    let finalValue = audited.ok ? audited.value : before;
 
     let polishMeta: { applied: boolean; raw?: string; note?: string } = { applied: false, note: "skipped" };
     if (audited.ok && finalValue != null && fieldType(field) === "string" && !skipPolish) {
       const s = typeof finalValue === "string" ? finalValue : null;
       if (s && s.length > 0) {
-        const polished = await polishFreeTextField(field, s, edital);
-        finalValue = polished.text;
-        polishMeta = { applied: true, raw: polished.raw };
+        try {
+          const polished = await polishFreeTextField(field, s, edital);
+          finalValue = polished.text;
+          polishMeta = { applied: true, raw: polished.raw };
+        } catch (e) {
+          if (isOllamaTimeout(e)) {
+            console.warn(`  ✓ polish ${field}: timeout — mantém texto auditado`);
+            polishMeta = { applied: false, note: "polish_timeout" };
+          } else {
+            throw e;
+          }
+        }
       } else {
         polishMeta = { applied: false, note: "empty_string" };
       }
@@ -782,7 +803,7 @@ async function validateOneEdital(
     }
 
     let status = "kept";
-    if (!audited.ok) status = "invalid";
+    if (!audited.ok) status = "inconclusive";
     else if (finalValue === null && before !== null) status = "cleared";
     else if (JSON.stringify(before) !== JSON.stringify(finalValue)) status = "corrected";
 
@@ -800,10 +821,18 @@ async function validateOneEdital(
             snippet_preview: String(evidence.snippet || "").slice(0, 400),
           }
         : null,
+      ...(!audited.ok ? { note: "auditoria_sem_decisao_final" } : {}),
     };
 
     if (!audited.ok) {
-      return { field, report, finalValue: null, auditedOk: false, before, dbUpdate: null };
+      return {
+        field,
+        report,
+        finalValue: before,
+        auditedOk: true,
+        before,
+        dbUpdate: null,
+      };
     }
 
     const shouldNull = finalValue === null && before !== null && before !== undefined;
@@ -822,10 +851,6 @@ async function validateOneEdital(
 
   for (const o of fieldOutcomes) {
     reportFields[o.field] = o.report;
-    if (!o.auditedOk) {
-      current[o.field] = null;
-      continue;
-    }
     current[o.field] = o.finalValue;
     if (o.dbUpdate === "null") await updateOriginalEditalField(supabase, edital.id, o.field, null);
     else if (o.dbUpdate === "value") await updateOriginalEditalField(supabase, edital.id, o.field, o.finalValue);
@@ -894,6 +919,7 @@ function workerIdleMsNoWork(): number {
 }
 
 export async function runValidateBatch(): Promise<{ hadWork: boolean }> {
+  await initOllamaBaseUrl();
   const supabase = createSupabase();
 
   const limitRaw = parseInt(process.env.VALIDATE_EDITAIS_LIMIT || "0", 10);

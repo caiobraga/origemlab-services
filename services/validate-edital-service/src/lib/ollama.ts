@@ -1,5 +1,6 @@
 import { describeFetchError } from "./fetchError";
 import { ollamaFetch } from "./ollamaHttp";
+import { getResolvedOllamaBaseUrl, getResolvedOllamaModel } from "./ollamaResolve";
 import { withRetry } from "./retry";
 
 type OllamaGenerateResponse = {
@@ -49,11 +50,26 @@ function getOllamaNumPredict(): number {
 
 export function isOllamaGenerateTimeout(err: unknown): boolean {
   const msg = err instanceof Error ? err.message : String(err);
-  return /Ollama generate/i.test(msg) && /timed out after \d+ms|fetch aborted/i.test(msg);
+  if (/Ollama generate/i.test(msg) && /timed out after \d+ms|fetch aborted/i.test(msg)) return true;
+  return /Ollama generate/i.test(msg) && isUndiciHeadersOrBodyTimeout(err);
+}
+
+function isUndiciHeadersOrBodyTimeout(err: unknown): boolean {
+  const msg = (err instanceof Error ? err.message : String(err)).toLowerCase();
+  if (/und_err_headers_timeout|und_err_body_timeout|headerstimeouterror|headers timeout error/i.test(msg)) {
+    return true;
+  }
+  const cause = err instanceof Error ? (err as Error & { cause?: unknown }).cause : null;
+  if (cause instanceof Error) {
+    const c = cause as Error & { code?: string };
+    if (c.code === "UND_ERR_HEADERS_TIMEOUT" || c.code === "UND_ERR_BODY_TIMEOUT") return true;
+    if (/headers timeout|body timeout/i.test(cause.message)) return true;
+  }
+  return false;
 }
 
 export function isOllamaTimeout(err: unknown): boolean {
-  return isOllamaGenerateTimeout(err);
+  return isOllamaGenerateTimeout(err) || isUndiciHeadersOrBodyTimeout(err);
 }
 
 let generateGapChain: Promise<void> = Promise.resolve();
@@ -141,8 +157,8 @@ async function ollamaGenerateOnce(prompt: string, baseUrl: string, model: string
 
 export async function ollamaGenerate(prompt: string): Promise<string> {
   await waitGenerateGap();
-  const baseUrl = getOllamaBaseUrl();
-  const model = getOllamaModel();
+  const baseUrl = getResolvedOllamaBaseUrl();
+  const model = getResolvedOllamaModel();
   const timeoutMs = getOllamaGenerateTimeoutMs();
   try {
     return await withRetry(() => ollamaGenerateOnce(prompt, baseUrl, model, timeoutMs), {
