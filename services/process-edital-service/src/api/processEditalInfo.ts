@@ -17,6 +17,12 @@ import {
 import { initOllamaBaseUrl } from "../lib/ollamaResolve";
 import { makeEventBase, publishDomainEvent } from "../lib/eventbridge";
 import { mapPool, readConcurrencyEnv } from "../lib/concurrency.js";
+import {
+  isPrazoInscricaoMissing,
+  normalizePrazoInscricaoFromText,
+  reconcilePrazoInscricaoFromSources,
+} from "../../../../shared/editalPrazoSync.ts";
+import { extractValorLinesForStorage } from "../../../../shared/editalValorExtract.ts";
 
 type FieldEvidence = {
   /** `topk` = similaridade; `chunkscan` = lotes sequenciais do documento; `bulk`/`window` = legado. */
@@ -47,6 +53,7 @@ type EditalInfo = {
   sobre_programa: string | null;
   criterios_elegibilidade: string | null;
   timeline_estimada: any | null;
+  data_encerramento?: string | null;
 };
 
 type FieldKey =
@@ -103,15 +110,14 @@ function normalizeValorProjetoForStorage(raw: unknown): string | null {
     const parsed = text.startsWith("{") ? safeJsonParse(text) : null;
     if (parsed && typeof parsed === "object") {
       items = fromObject(parsed);
-    } else if (text.length <= VALOR_LINE_MAX) {
-      return text;
     } else {
-      const money = text.match(
-        /(?:até\s+)?R\$\s*[\d.,]+(?:\s*(?:mil|milhões?|mi\.?|bi\.?))?|(?:teto|máximo|mínimo|valor)[^.]{0,40}R\$\s*[\d.,]+/gi,
-      );
-      if (money?.length) {
-        for (const m of money) pushLine(items, m);
-        items = [...new Set(items)].slice(0, VALOR_ITEMS_MAX);
+      const lines = extractValorLinesForStorage(text, VALOR_ITEMS_MAX, VALOR_LINE_MAX);
+      if (lines.length > 1) {
+        items = lines;
+      } else if (text.length <= VALOR_LINE_MAX) {
+        return text;
+      } else if (lines.length === 1) {
+        return lines[0];
       } else {
         return `${text.slice(0, VALOR_LINE_MAX - 1)}…`;
       }
@@ -157,6 +163,57 @@ function fieldNeedsExtraction(field: FieldKey, before: any): boolean {
 
 function editalNeedsAnyFieldExtraction(edital: EditalInfo, fields: FieldKey[]): boolean {
   return fields.some((f) => fieldNeedsExtraction(f, (edital as any)[f]));
+}
+
+function editalHasAnyUsefulExtractedField(edital: EditalInfo, fields: FieldKey[]): boolean {
+  return fields.some((f) => extractionValueIsUseful(f, (edital as any)[f]));
+}
+
+function patchHasUsefulExtractedField(patch: Record<string, any>, fields: FieldKey[]): boolean {
+  return fields.some((f) => f in patch && extractionValueIsUseful(f, patch[f]));
+}
+
+function patchHasMeaningfulPrazo(patch: Record<string, any>): boolean {
+  if (!("prazo_inscricao" in patch)) return false;
+  return !isPrazoInscricaoMissing(patch.prazo_inscricao);
+}
+
+async function loadEditalCorretosIdSet(supabase: SupabaseClient): Promise<Set<string>> {
+  const { data, error } = await supabase.from("editais_corretos").select("id");
+  if (error) throw new Error(`Erro ao listar editais_corretos: ${error.message}`);
+  return new Set((data ?? []).map((r: { id: string }) => String(r.id)));
+}
+
+function filterEditaisForProcessBatch(
+  editais: EditalInfo[],
+  fields: FieldKey[],
+  opts: {
+    backlogOnly: boolean;
+    chunksOnly: boolean;
+    weakOnly: boolean;
+    corretosIds: Set<string>;
+    chunkRank: Map<string, number> | null;
+  },
+): EditalInfo[] {
+  let out = editais;
+  if (opts.backlogOnly) {
+    const before = out.length;
+    out = out.filter((e) => !opts.corretosIds.has(e.id));
+    console.log(`📋 PROCESS_EDITAL_BACKLOG_ONLY=1 — ${before} → ${out.length} (fora de editais_corretos)`);
+  }
+  if (opts.chunksOnly && opts.chunkRank?.size) {
+    const before = out.length;
+    out = out.filter((e) => opts.chunkRank!.has(e.id));
+    console.log(`📋 PROCESS_EDITAL_CHUNKS_ONLY=1 — ${before} → ${out.length} (com chunks em documents)`);
+  } else if (opts.chunksOnly && !opts.chunkRank?.size) {
+    console.warn("⚠️ PROCESS_EDITAL_CHUNKS_ONLY=1 mas RPC de chunks indisponível — filtro ignorado.");
+  }
+  if (opts.weakOnly) {
+    const before = out.length;
+    out = out.filter((e) => editalNeedsAnyFieldExtraction(e, fields));
+    console.log(`📋 PROCESS_EDITAL_WEAK_ONLY=1 — ${before} → ${out.length} (campos pendentes de extração)`);
+  }
+  return out;
 }
 
 type ChunkOrderRow = { edital_id: string; chunks: number };
@@ -563,7 +620,7 @@ const DATE_IN_TEXT =
 
 function timelinePhaseHasDateSignal(fase: any): boolean {
   if (!fase || typeof fase !== "object") return false;
-  for (const key of ["data_inicio", "data_fim", "prazo"] as const) {
+  for (const key of ["data_inicio", "data_fim", "fim", "prazo"] as const) {
     const t = String((fase as any)[key] ?? "").trim();
     if (!t || t.toLowerCase() === "null") continue;
     if (DATE_IN_TEXT.test(t)) return true;
@@ -609,8 +666,13 @@ function normalizeTimelineEstimada(raw: unknown): { fases: any[] } | null {
       const status = f?.status != null && String(f.status).trim() ? String(f.status).trim().slice(0, 40) : null;
       const data_inicio =
         f?.data_inicio != null && String(f.data_inicio).trim() ? String(f.data_inicio).trim().slice(0, 32) : null;
-      const data_fim =
-        f?.data_fim != null && String(f.data_fim).trim() ? String(f.data_fim).trim().slice(0, 32) : null;
+      const data_fimRaw =
+        f?.data_fim != null && String(f.data_fim).trim()
+          ? String(f.data_fim).trim()
+          : f?.fim != null && String(f.fim).trim()
+            ? String(f.fim).trim()
+            : "";
+      const data_fim = data_fimRaw ? data_fimRaw.slice(0, 32) : null;
       return { nome, prazo, status, data_inicio, data_fim };
     })
     .filter(Boolean);
@@ -1595,8 +1657,21 @@ function hasNonEmptyContextText(s: string): boolean {
   return Boolean(String(s || "").trim());
 }
 
-async function updateEditalInfo(supabase: SupabaseClient, editalId: string, patch: Record<string, any>) {
-  const updateData = { ...patch, informacoes_processadas_em: new Date().toISOString() };
+async function updateEditalInfo(
+  supabase: SupabaseClient,
+  editalId: string,
+  patch: Record<string, any>,
+  fields: FieldKey[],
+) {
+  const updateData: Record<string, any> = { ...patch };
+  const stampOnEmpty = String(process.env.PROCESS_EDITAL_STAMP_ON_EMPTY || "").trim() === "1";
+  const shouldStamp =
+    stampOnEmpty || patchHasUsefulExtractedField(patch, fields) || patchHasMeaningfulPrazo(patch);
+  if (shouldStamp) {
+    updateData.informacoes_processadas_em = new Date().toISOString();
+  } else if (Object.keys(patch).length > 0) {
+    console.log("  ℹ️ Patch sem campos úteis — gravando valores sem marcar informacoes_processadas_em.");
+  }
   const { error } = await supabase.from("editais").update(updateData).eq("id", editalId);
   if (error) throw new Error(`Erro ao atualizar edital: ${error.message}`);
 }
@@ -1688,7 +1763,7 @@ async function notifyProcessFailure(
 }
 
 const EDITAIS_PROCESS_SELECT =
-  "id,numero,titulo,fonte,criado_em,informacoes_processadas_em,informacoes_extracao_evidence,valor_projeto,prazo_inscricao,localizacao,vagas,is_researcher,is_company,sobre_programa,criterios_elegibilidade,timeline_estimada";
+  "id,numero,titulo,fonte,criado_em,informacoes_processadas_em,informacoes_extracao_evidence,valor_projeto,prazo_inscricao,localizacao,vagas,is_researcher,is_company,sobre_programa,criterios_elegibilidade,timeline_estimada,data_encerramento";
 
 /** Carrega todos os editais (paginado). A decisão de chamar o modelo é por campo em `fieldNeedsExtraction`. */
 async function fetchEditaisAllForProcessing(supabase: SupabaseClient): Promise<EditalInfo[]> {
@@ -1734,6 +1809,51 @@ type ProcessOneEditalOutcome =
   | { status: "skip_sem_update_db" }
   | { status: "fail" };
 
+function applyPrazoReconcileToPatch(patch: Record<string, any>, edital: EditalInfo): boolean {
+  const currentPrazo = patch.prazo_inscricao ?? edital.prazo_inscricao;
+  const timeline = patch.timeline_estimada ?? edital.timeline_estimada;
+
+  if (!isPrazoInscricaoMissing(currentPrazo)) {
+    const normalized = normalizePrazoInscricaoFromText(currentPrazo);
+    if (normalized && normalized !== currentPrazo) {
+      patch.prazo_inscricao = normalized;
+      return true;
+    }
+    return false;
+  }
+
+  const reconciled = reconcilePrazoInscricaoFromSources(currentPrazo, timeline, edital.data_encerramento);
+  if (!reconciled) return false;
+  patch.prazo_inscricao = reconciled;
+  return true;
+}
+
+async function persistReconciledPrazoIfNeeded(
+  supabase: SupabaseClient,
+  edital: EditalInfo,
+  tag: string,
+  fields: FieldKey[],
+): Promise<boolean> {
+  if (!isPrazoInscricaoMissing(edital.prazo_inscricao)) {
+    const normalized = normalizePrazoInscricaoFromText(edital.prazo_inscricao);
+    if (normalized && normalized !== edital.prazo_inscricao) {
+      await updateEditalInfo(supabase, edital.id, { prazo_inscricao: normalized }, fields);
+      console.log(`  ${tag} 📅 prazo_inscricao normalizado: ${normalized}`);
+      return true;
+    }
+    return false;
+  }
+  const reconciled = reconcilePrazoInscricaoFromSources(
+    edital.prazo_inscricao,
+    edital.timeline_estimada,
+    edital.data_encerramento,
+  );
+  if (!reconciled) return false;
+  await updateEditalInfo(supabase, edital.id, { prazo_inscricao: reconciled }, fields);
+  console.log(`  ${tag} 📅 prazo_inscricao derivado da timeline: ${reconciled}`);
+  return true;
+}
+
 async function processOneEdital(
   supabase: SupabaseClient,
   edital: EditalInfo,
@@ -1750,6 +1870,7 @@ async function processOneEdital(
 
   try {
     if (!editalNeedsAnyFieldExtraction(edital, fields)) {
+      const prazoFixed = await persistReconciledPrazoIfNeeded(supabase, edital, tag, fields);
       if (!(edital as any).informacoes_processadas_em) {
         const { error: stampErr } = await supabase
           .from("editais")
@@ -1757,8 +1878,12 @@ async function processOneEdital(
           .eq("id", edital.id);
         if (stampErr) throw new Error(`Erro ao marcar informacoes_processadas_em: ${stampErr.message}`);
         console.log(`  ${tag} ℹ️ Campos extraíveis já preenchidos — gravando informacoes_processadas_em.`);
-        await notifyProcessSuccess(edital, { stamp_only: true });
+        await notifyProcessSuccess(edital, { stamp_only: true, ...(prazoFixed ? { campos: ["prazo_inscricao"] } : {}) });
         return { status: "ok", stampOnly: true };
+      }
+      if (prazoFixed) {
+        await notifyProcessSuccess(edital, { campos: ["prazo_inscricao"] });
+        return { status: "ok" };
       }
       console.log(`  ${tag} ⏭️ Sem campos pendentes de extração — sem fetch de documents / modelo.`);
       return { status: "skip_completo" };
@@ -1842,7 +1967,16 @@ async function processOneEdital(
       patch.informacoes_extracao_evidence = { ...prevEvidence, ...evidenceAcc };
     }
 
+    if (applyPrazoReconcileToPatch(patch, edital)) {
+      console.log(`  ${tag} 📅 prazo_inscricao derivado da timeline: ${patch.prazo_inscricao}`);
+    }
+
     if (Object.keys(patch).length === 0) {
+      const prazoFixed = await persistReconciledPrazoIfNeeded(supabase, edital, tag, fields);
+      if (prazoFixed) {
+        await notifyProcessSuccess(edital, { campos: ["prazo_inscricao"] });
+        return { status: "ok" };
+      }
       const aindaPendente = fields.some((f) => fieldNeedsExtraction(f, (edital as any)[f]));
       console.log(
         `  ${tag} ⏭️ pulando update: ${
@@ -1854,7 +1988,7 @@ async function processOneEdital(
       return { status: "skip_sem_update_db" };
     }
 
-    await updateEditalInfo(supabase, edital.id, patch);
+    await updateEditalInfo(supabase, edital.id, patch, fields);
     const camposSalvos = Object.keys(patch).filter((k) => k !== "informacoes_extracao_evidence");
     await notifyProcessSuccess(edital, { campos: camposSalvos });
     console.log(`  ${tag} ✅ atualizado`);
@@ -1866,7 +2000,7 @@ async function processOneEdital(
     const fieldKeys = Object.keys(patch).filter((k) => k !== "informacoes_extracao_evidence");
     if (fieldKeys.length > 0) {
       try {
-        await updateEditalInfo(supabase, edital.id, patch);
+        await updateEditalInfo(supabase, edital.id, patch, fields);
         console.warn(
           `  ${tag} ⚠️ Gravação parcial (${fieldKeys.join(", ")}) — erro posterior: ${e instanceof Error ? e.message : String(e)}`,
         );
@@ -1904,6 +2038,9 @@ export async function runProcessBatch(): Promise<{ hadWork: boolean }> {
     parseInt(process.env.DELAY_BETWEEN_EDITAIS_MS || delayDefault, 10) || 0,
   );
   const onlyId = String(process.env.PROCESS_EDITAL_ONLY_ID || "").trim();
+  const backlogOnly = String(process.env.PROCESS_EDITAL_BACKLOG_ONLY || "").trim() === "1";
+  const chunksOnly = String(process.env.PROCESS_EDITAL_CHUNKS_ONLY || "").trim() === "1";
+  const weakOnly = String(process.env.PROCESS_EDITAL_WEAK_ONLY || "").trim() === "1";
 
   const fields: FieldKey[] = [
     "valor_projeto",
@@ -1919,7 +2056,7 @@ export async function runProcessBatch(): Promise<{ hadWork: boolean }> {
 
   console.log("🧠 process-edital-service (Ollama-only)");
   console.log(
-    `📦 limit=${Number.isFinite(limit) ? limit : "∞"} editalConcurrency=${editalConcurrency} fieldConcurrency=${fieldConcurrency} delayBetweenEditaisMs=${delayBetweenEditaisMs} order=${String(process.env.PROCESS_EDITAL_ORDER || "pending_first").trim() || "pending_first"}`,
+    `📦 limit=${Number.isFinite(limit) ? limit : "∞"} editalConcurrency=${editalConcurrency} fieldConcurrency=${fieldConcurrency} delayBetweenEditaisMs=${delayBetweenEditaisMs} order=${String(process.env.PROCESS_EDITAL_ORDER || "pending_first").trim() || "pending_first"} backlogOnly=${backlogOnly} chunksOnly=${chunksOnly} weakOnly=${weakOnly}`,
   );
   if (onlyId) console.log(`🎯 PROCESS_EDITAL_ONLY_ID=${onlyId}`);
 
@@ -1936,11 +2073,20 @@ export async function runProcessBatch(): Promise<{ hadWork: boolean }> {
     if (editais.length === 0) {
       console.warn("⚠️ Nenhum edital com esse id na tabela `editais` (verifique o UUID).");
     }
+  } else if (backlogOnly || chunksOnly || weakOnly) {
+    const corretosIds = backlogOnly ? await loadEditalCorretosIdSet(supabase) : new Set<string>();
+    editais = filterEditaisForProcessBatch(editais, fields, {
+      backlogOnly,
+      chunksOnly,
+      weakOnly,
+      corretosIds,
+      chunkRank,
+    });
   }
   applyProcessEditalOrdering(editais, fields, chunkRank);
   const targets = Number.isFinite(limit) ? editais.slice(0, limit) : editais;
   console.log(
-    `📥 editais carregados=${loadedFromDb}${onlyId ? ` (após only_id: ${editais.length})` : ""} a processar neste lote=${targets.length}`,
+    `📥 editais carregados=${loadedFromDb}${onlyId ? ` (após only_id: ${editais.length})` : ""}${backlogOnly || chunksOnly || weakOnly ? ` (após filtros: ${editais.length})` : ""} a processar neste lote=${targets.length}`,
   );
 
   let ok = 0;

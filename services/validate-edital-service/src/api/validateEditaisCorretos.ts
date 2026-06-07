@@ -7,6 +7,12 @@ import { createSupabase } from "../lib/supabase";
 import { getMaxAuditContextChars, isOllamaTimeout, ollamaGenerate } from "../lib/ollama";
 import { initOllamaBaseUrl } from "../lib/ollamaResolve";
 import { mapPool, readConcurrencyEnv } from "../lib/concurrency.js";
+import {
+  editalHasActiveDeadline,
+  isPrazoInscricaoMissing,
+  normalizePrazoInscricaoFromText,
+  reconcilePrazoInscricaoFromSources,
+} from "../../../../shared/editalPrazoSync.ts";
 
 type FieldEvidence = {
   source: "topk" | "chunkscan" | "window" | "bulk";
@@ -116,6 +122,25 @@ function hasMeaningfulExtractedValue(field: FieldKey, value: any): boolean {
   return normalizeMaybeString(value) != null;
 }
 
+/** Campos críticos são auditados mesmo com valor vazio/"Não informado" (tentativa de extração no PDF). */
+function fieldNeedsAudit(field: FieldKey, before: any): boolean {
+  if (
+    field === "prazo_inscricao" ||
+    field === "valor_projeto" ||
+    field === "sobre_programa" ||
+    field === "criterios_elegibilidade"
+  ) {
+    return true;
+  }
+  if (field === "timeline_estimada") {
+    return hasMeaningfulExtractedValue(field, before);
+  }
+  if (field === "is_researcher" || field === "is_company") {
+    return typeof before === "boolean";
+  }
+  return hasMeaningfulExtractedValue(field, before);
+}
+
 function listNonNullExtractedFields(edital: EditalRow): FieldKey[] {
   return EXTRACTED_FIELDS.filter((field) => hasMeaningfulExtractedValue(field, (edital as any)[field]));
 }
@@ -143,23 +168,11 @@ function dateFromEncerramento(dataEnc: string | null | undefined): Date | null {
   return isNaN(d.getTime()) ? null : d;
 }
 
-function hasParseableSubmissionDeadline(row: {
-  data_encerramento?: string | null;
-  prazo_inscricao?: string | null;
-  timeline_estimada?: any;
-}): boolean {
-  if (dateFromEncerramento(row.data_encerramento)) return true;
-  const prazo = row.prazo_inscricao;
-  if (prazo && hasAnyDateSignalInText(typeof prazo === "string" ? prazo : JSON.stringify(prazo))) return true;
-  const tl = unwrapJsonLayers(row.timeline_estimada);
-  if (tl && typeof tl === "object" && Array.isArray((tl as any).fases)) {
-    for (const f of (tl as any).fases) {
-      if (!f || typeof f !== "object") continue;
-      const bits = [f.data_fim, f.data_inicio, f.prazo, f.fim].filter(Boolean).map(String);
-      if (bits.some((b) => hasAnyDateSignalInText(b))) return true;
-    }
+function reconcilePrazoInscricao(prazo: any, timeline: any, dataEncerramento?: string | null): string | null {
+  if (!isPrazoInscricaoMissing(prazo) && hasMeaningfulExtractedValue("prazo_inscricao", prazo)) {
+    return canonicalizePrazoInscricaoForSite(prazo);
   }
-  return false;
+  return reconcilePrazoInscricaoFromSources(prazo, timeline, dataEncerramento);
 }
 
 function assessEditalCorretoPresentable(row: {
@@ -173,6 +186,7 @@ function assessEditalCorretoPresentable(row: {
   data_encerramento?: string | null;
   prazo_inscricao?: string | null;
   timeline_estimada?: any;
+  criado_em?: string | null;
 }): { ok: boolean; reasons: string[] } {
   const reasons: string[] = [];
   const minResumo = Math.max(20, parseInt(process.env.VALIDATE_MIN_RESUMO_CHARS || "50", 10) || 50);
@@ -192,7 +206,34 @@ function assessEditalCorretoPresentable(row: {
     reasons.push("publico_alvo_exclui_pesquisador_e_empresa");
   }
 
-  if (!hasParseableSubmissionDeadline(row)) reasons.push("sem_prazo_parseavel");
+  if (!hasMeaningfulExtractedValue("prazo_inscricao", row.prazo_inscricao)) {
+    const hasDeadline = editalHasActiveDeadline({
+      titulo: row.titulo,
+      descricao: row.descricao,
+      sobre_programa: row.sobre_programa,
+      timeline_estimada: row.timeline_estimada,
+      prazo_inscricao: row.prazo_inscricao,
+      data_encerramento: row.data_encerramento,
+      criado_em: row.criado_em,
+      status: (row as { status?: string | null }).status,
+    });
+    if (!hasDeadline) reasons.push("sem_prazo_inscricao");
+  }
+
+  if (
+    !editalHasActiveDeadline({
+      titulo: row.titulo,
+      descricao: row.descricao,
+      sobre_programa: row.sobre_programa,
+      timeline_estimada: row.timeline_estimada,
+      prazo_inscricao: row.prazo_inscricao,
+      data_encerramento: row.data_encerramento,
+      criado_em: row.criado_em,
+      status: (row as { status?: string | null }).status,
+    })
+  ) {
+    reasons.push("prazo_encerrado");
+  }
 
   return { ok: reasons.length === 0, reasons };
 }
@@ -593,7 +634,7 @@ function normalizeTimelineEstimada(value: any): { fases: Array<Record<string, st
       prazo: normalizeMaybeString(f?.prazo),
       status: normalizeMaybeString(f?.status),
       data_inicio: normalizeMaybeString(f?.data_inicio),
-      data_fim: normalizeMaybeString(f?.data_fim),
+      data_fim: normalizeMaybeString(f?.data_fim) || normalizeMaybeString(f?.fim),
     }))
     .filter((f) => f.nome || f.prazo || f.status || f.data_inicio || f.data_fim);
 
@@ -696,7 +737,9 @@ function canonicalizePrazoInscricaoForSite(v: any): string | null {
       return null;
     }
   }
-  return normalizeMaybeString(String(unwrapped));
+  const raw = normalizeMaybeString(String(unwrapped));
+  if (!raw) return null;
+  return normalizePrazoInscricaoFromText(raw) ?? raw;
 }
 
 function validateFieldValue(field: FieldKey, value: any): { ok: boolean; normalized: any } {
@@ -762,19 +805,20 @@ async function validateOneEdital(
   const runField = async (field: FieldKey): Promise<FieldOutcome> => {
     const before = (edital as any)[field] ?? null;
 
-    if (!hasMeaningfulExtractedValue(field, before)) {
+    if (!fieldNeedsAudit(field, before)) {
       return {
         field,
-        report: { status: "skipped", reason: "before_is_null", before, after: null },
-        finalValue: null,
-        auditedOk: false,
+        report: { status: "skipped", reason: "before_is_null", before, after: before ?? null },
+        finalValue: before ?? null,
+        auditedOk: true,
         before,
         dbUpdate: null,
       };
     }
 
+    const auditBefore = hasMeaningfulExtractedValue(field, before) ? before : null;
     const evidence = evidenceMap[field] as FieldEvidence | undefined;
-    const audited = await callAuditForField(field, edital, before, evidence, rowsRaw);
+    const audited = await callAuditForField(field, edital, auditBefore, evidence, rowsRaw);
     let finalValue = audited.ok ? audited.value : before;
 
     let polishMeta: { applied: boolean; raw?: string; note?: string } = { applied: false, note: "skipped" };
@@ -856,6 +900,32 @@ async function validateOneEdital(
     else if (o.dbUpdate === "value") await updateOriginalEditalField(supabase, edital.id, o.field, o.finalValue);
   }
 
+  const prazoBeforeReconcile = current.prazo_inscricao;
+  const reconciledPrazo = reconcilePrazoInscricao(
+    current.prazo_inscricao,
+    current.timeline_estimada,
+    edital.data_encerramento,
+  );
+  if (
+    reconciledPrazo &&
+    !hasMeaningfulExtractedValue("prazo_inscricao", prazoBeforeReconcile) &&
+    reconciledPrazo !== prazoBeforeReconcile
+  ) {
+    current.prazo_inscricao = reconciledPrazo;
+    await updateOriginalEditalField(supabase, edital.id, "prazo_inscricao", reconciledPrazo);
+    reportFields.prazo_inscricao = {
+      ...(typeof reportFields.prazo_inscricao === "object" && reportFields.prazo_inscricao
+        ? reportFields.prazo_inscricao
+        : {}),
+      status: "derived_from_timeline",
+      before: (edital as any).prazo_inscricao ?? null,
+      after: reconciledPrazo,
+      reason: "timeline_ou_data_encerramento",
+    };
+  } else if (reconciledPrazo) {
+    current.prazo_inscricao = reconciledPrazo;
+  }
+
   current.prazo_inscricao = canonicalizePrazoInscricaoForSite(current.prazo_inscricao);
 
   const rowToUpsert = formatEditalCorretoRow(edital, current);
@@ -918,6 +988,27 @@ function workerIdleMsNoWork(): number {
   return Number.isFinite(n) ? Math.max(0, n) : 120000;
 }
 
+async function loadEditalCorretosIdSet(supabase: SupabaseClient): Promise<Set<string>> {
+  const { data, error } = await supabase.from("editais_corretos").select("id");
+  if (error) throw new Error(`Erro ao listar editais_corretos: ${error.message}`);
+  return new Set((data ?? []).map((r: { id: string }) => String(r.id)));
+}
+
+async function logValidateFunnelStats(supabase: SupabaseClient, backlogOnly: boolean): Promise<void> {
+  const [{ count: total }, { count: processed }, { count: corretos }] = await Promise.all([
+    supabase.from("editais").select("*", { count: "exact", head: true }),
+    supabase
+      .from("editais")
+      .select("*", { count: "exact", head: true })
+      .not("informacoes_processadas_em", "is", null),
+    supabase.from("editais_corretos").select("*", { count: "exact", head: true }),
+  ]);
+  const backlog = Math.max(0, (processed ?? 0) - (corretos ?? 0));
+  console.log(
+    `📊 Funil: editais=${total ?? "?"} processados_info=${processed ?? "?"} editais_corretos=${corretos ?? "?"} backlog_validate≈${backlogOnly ? backlog : "n/a"} (modo backlog=${backlogOnly ? "sim" : "não"})`,
+  );
+}
+
 export async function runValidateBatch(): Promise<{ hadWork: boolean }> {
   await initOllamaBaseUrl();
   const supabase = createSupabase();
@@ -926,6 +1017,10 @@ export async function runValidateBatch(): Promise<{ hadWork: boolean }> {
   const totalLimit = Number.isFinite(limitRaw) && limitRaw > 0 ? limitRaw : Infinity;
   const batchSize = Math.max(20, parseInt(process.env.VALIDATE_EDITAIS_BATCH || "200", 10) || 200);
   const editalConcurrency = readConcurrencyEnv("VALIDATE_EDITAL_CONCURRENCY", 2, 6);
+  const reprocessValidated = String(process.env.VALIDATE_REPROCESS || "").trim() === "1";
+  const backlogOnly = reprocessValidated
+    ? String(process.env.VALIDATE_BACKLOG_ONLY || "").trim() === "1"
+    : String(process.env.VALIDATE_BACKLOG_ONLY || "1").trim() !== "0";
   const delayDefault = editalConcurrency > 1 ? "0" : "3000";
   const betweenDefault = editalConcurrency > 1 ? "0" : "6000";
   const delayMs = Math.max(0, parseInt(process.env.API_REQUEST_DELAY_MS || delayDefault, 10) || 0);
@@ -934,9 +1029,12 @@ export async function runValidateBatch(): Promise<{ hadWork: boolean }> {
     parseInt(process.env.DELAY_BETWEEN_EDITAIS_MS || betweenDefault, 10) || 0,
   );
 
+  const corretosIds = reprocessValidated ? new Set<string>() : await loadEditalCorretosIdSet(supabase);
+  await logValidateFunnelStats(supabase, backlogOnly);
+
   console.log("🔎 validate-edital-service (Ollama-only)");
   console.log(
-    `📦 limit=${Number.isFinite(totalLimit) ? totalLimit : "∞"} batch=${batchSize} editalConcurrency=${editalConcurrency} fieldConcurrency=${readConcurrencyEnv("VALIDATE_FIELD_CONCURRENCY", 1, 4)} delayMs=${delayMs} betweenEditaisMs=${betweenEditaisMs} scope=todos_processados`,
+    `📦 limit=${Number.isFinite(totalLimit) ? totalLimit : "∞"} batch=${batchSize} editalConcurrency=${editalConcurrency} fieldConcurrency=${readConcurrencyEnv("VALIDATE_FIELD_CONCURRENCY", 1, 4)} delayMs=${delayMs} betweenEditaisMs=${betweenEditaisMs} backlogOnly=${backlogOnly} reprocess=${reprocessValidated}`,
   );
 
   let ok = 0;
@@ -960,8 +1058,14 @@ export async function runValidateBatch(): Promise<{ hadWork: boolean }> {
       .range(offset, offset + pageLimit - 1);
     if (error) throw new Error(`Erro ao buscar editais: ${error.message}`);
 
-    const page = (pageData ?? []) as EditalRow[];
-    if (page.length === 0) break;
+    const page = ((pageData ?? []) as EditalRow[]).filter(
+      (row) =>
+        (reprocessValidated || !corretosIds.has(row.id)) && listNonNullExtractedFields(row).length > 0,
+    );
+    if (page.length === 0) {
+      if ((pageData ?? []).length > 0) continue;
+      break;
+    }
     hadPotentialWork = true;
 
     const toRun = Number.isFinite(totalLimit)
