@@ -39,8 +39,14 @@ export function getOllamaGenerateTimeoutMs(): number {
 }
 
 function getOllamaGenerateRetries(): number {
-  const raw = parseInt(process.env.OLLAMA_GENERATE_RETRIES || "1", 10);
-  return Number.isFinite(raw) ? Math.max(1, Math.min(3, raw)) : 1;
+  const raw = parseInt(process.env.OLLAMA_GENERATE_RETRIES || "3", 10);
+  return Number.isFinite(raw) ? Math.max(1, Math.min(5, raw)) : 3;
+}
+
+function getOllamaNumCtx(): number {
+  const raw = parseInt(process.env.OLLAMA_NUM_CTX || "", 10);
+  if (Number.isFinite(raw) && raw > 0) return Math.min(32_768, Math.max(1024, raw));
+  return Math.min(8192, Math.max(2048, Math.ceil(getMaxContextChars() / 2.5)));
 }
 
 function getOllamaNumPredict(): number {
@@ -137,6 +143,7 @@ async function ollamaGenerateOnce(prompt: string, baseUrl: string, model: string
           options: {
             temperature: Number.isFinite(temperature) ? temperature : 0,
             num_predict: getOllamaNumPredict(),
+            num_ctx: getOllamaNumCtx(),
           },
         }),
         signal: controller.signal,

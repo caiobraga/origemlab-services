@@ -58,6 +58,10 @@ Parameters:
     Type: String
     Default: "24h"
     Description: "Evita unload do modelo entre chamadas (ex. 24h, -1)"
+  OllamaContextLength:
+    Type: Number
+    Default: 8192
+    Description: "Cap de contexto (tokens). Default Ollama recente (262144) causa OOM/segfault em Fargate CPU"
   DesiredCount:
     Type: Number
     Default: 1
@@ -190,6 +194,8 @@ Resources:
               Value: !Ref OllamaMaxLoadedModels
             - Name: OLLAMA_KEEP_ALIVE
               Value: !Ref OllamaKeepAlive
+            - Name: OLLAMA_CONTEXT_LENGTH
+              Value: !Ref OllamaContextLength
             - Name: OLLAMA_CHAT_MODEL
               Value: !Ref OllamaChatModel
             - Name: OLLAMA_EMBED_MODEL

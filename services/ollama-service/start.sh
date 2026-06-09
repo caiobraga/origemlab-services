@@ -4,8 +4,10 @@ export OLLAMA_HOST="${OLLAMA_HOST:-0.0.0.0:11434}"
 export OLLAMA_NUM_PARALLEL="${OLLAMA_NUM_PARALLEL:-1}"
 export OLLAMA_MAX_LOADED_MODELS="${OLLAMA_MAX_LOADED_MODELS:-2}"
 export OLLAMA_KEEP_ALIVE="${OLLAMA_KEEP_ALIVE:-24h}"
+# Default Ollama recente (262144) estoura RAM em Fargate CPU — cap explícito.
+export OLLAMA_CONTEXT_LENGTH="${OLLAMA_CONTEXT_LENGTH:-8192}"
 
-echo "Starting ollama serve on ${OLLAMA_HOST} (num_parallel=${OLLAMA_NUM_PARALLEL} max_loaded=${OLLAMA_MAX_LOADED_MODELS} keep_alive=${OLLAMA_KEEP_ALIVE})"
+echo "Starting ollama serve on ${OLLAMA_HOST} (num_parallel=${OLLAMA_NUM_PARALLEL} max_loaded=${OLLAMA_MAX_LOADED_MODELS} keep_alive=${OLLAMA_KEEP_ALIVE} context_length=${OLLAMA_CONTEXT_LENGTH})"
 ollama serve &
 OLLAMA_PID=$!
 

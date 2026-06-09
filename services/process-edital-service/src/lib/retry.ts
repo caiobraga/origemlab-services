@@ -1,4 +1,4 @@
-import { isTransientFetchError } from "./fetchError";
+import { isOllamaServerCrash, isTransientFetchError } from "./fetchError";
 
 export async function withRetry<T>(
   fn: () => Promise<T>,
@@ -13,7 +13,7 @@ export async function withRetry<T>(
     } catch (e) {
       last = e;
       if (i >= attempts - 1 || !isTransientFetchError(e)) throw e;
-      const delay = baseDelayMs * (i + 1);
+      const delay = isOllamaServerCrash(e) ? 10_000 * (i + 1) : baseDelayMs * (i + 1);
       console.warn(`⚠️ ${opts.label}: tentativa ${i + 1}/${attempts} falhou — retry em ${delay}ms (${e instanceof Error ? e.message : String(e)})`);
       await new Promise((r) => setTimeout(r, delay));
     }

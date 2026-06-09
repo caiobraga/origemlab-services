@@ -69,6 +69,7 @@ jobs:
           OLLAMA_NUM_PARALLEL: ${{ vars.OLLAMA_NUM_PARALLEL }}
           OLLAMA_MAX_LOADED_MODELS: ${{ vars.OLLAMA_MAX_LOADED_MODELS }}
           OLLAMA_KEEP_ALIVE: ${{ vars.OLLAMA_KEEP_ALIVE }}
+          OLLAMA_CONTEXT_LENGTH: ${{ vars.OLLAMA_CONTEXT_LENGTH }}
           NLB_SCHEME: ${{ vars.OLLAMA_SERVICE_NLB_SCHEME }}
         run: |
           set -euo pipefail
@@ -93,6 +94,7 @@ jobs:
           NUM_PARALLEL="${OLLAMA_NUM_PARALLEL:-1}"
           MAX_LOADED="${OLLAMA_MAX_LOADED_MODELS:-2}"
           KEEP_ALIVE="${OLLAMA_KEEP_ALIVE:-24h}"
+          CTX_LEN="${OLLAMA_CONTEXT_LENGTH:-8192}"
           SCHEME="${NLB_SCHEME:-internet-facing}"
 
           bash .github/scripts/cfn-delete-failed-stack.sh "${STACK_NAME}"
@@ -111,6 +113,7 @@ jobs:
             "OllamaNumParallel=${NUM_PARALLEL}"
             "OllamaMaxLoadedModels=${MAX_LOADED}"
             "OllamaKeepAlive=${KEEP_ALIVE}"
+            "OllamaContextLength=${CTX_LEN}"
             "NlbScheme=${SCHEME}"
           )
           [ -n "${PUBLIC_CIDR}" ] && OVERRIDES+=("PublicAccessCidr=${PUBLIC_CIDR}")

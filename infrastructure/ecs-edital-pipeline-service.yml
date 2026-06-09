@@ -83,10 +83,11 @@ Parameters:
     Default: 0
   ProcessEditalConcurrency:
     Type: Number
-    Default: 2
+    Default: 1
+    Description: "1 evita saturar Ollama (segfault com paralelismo alto em CPU)"
   ProcessEditalFieldConcurrency:
     Type: Number
-    Default: 2
+    Default: 1
   ValidateEditaisLimit:
     Type: Number
     Default: 0
@@ -98,10 +99,10 @@ Parameters:
     Default: 0
   ValidateEditalConcurrency:
     Type: Number
-    Default: 2
+    Default: 1
   ValidateFieldConcurrency:
     Type: Number
-    Default: 2
+    Default: 1
   ValidateForceRevalidate:
     Type: Number
     Default: 0
