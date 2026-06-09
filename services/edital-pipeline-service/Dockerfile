@@ -14,6 +14,8 @@ RUN cd pipeline && npm ci --omit=dev
 COPY services/process-edital-service/src ./process-edital-service/src
 COPY services/validate-edital-service/src ./validate-edital-service/src
 COPY services/edital-pipeline-service/src ./pipeline/src
+# Imports em process/validate usam ../../../../shared → /shared no container
+COPY shared /shared
 
 WORKDIR /app/pipeline
 ENV NODE_ENV=production
