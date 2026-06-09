@@ -1,4 +1,5 @@
-import { describeFetchError } from "./fetchError";
+import { withOllamaSlot } from "../../../../shared/ollamaRequestSlot.ts";
+import { describeFetchError, isOllamaServerCrash } from "./fetchError";
 import { ollamaFetch } from "./ollamaHttp";
 import {
   getResolvedOllamaBaseUrl,
@@ -62,8 +63,22 @@ function getOllamaGenerateRetries(): number {
 
 function getOllamaNumCtx(): number {
   const raw = parseInt(process.env.OLLAMA_NUM_CTX || "", 10);
-  if (Number.isFinite(raw) && raw > 0) return Math.min(32_768, Math.max(1024, raw));
-  return Math.min(8192, Math.max(2048, Math.ceil(getMaxContextChars() / 2.5)));
+  if (Number.isFinite(raw) && raw > 0) return Math.min(16_384, Math.max(1024, raw));
+  // 4096 tokens — seguro em Fargate CPU com chat + embed carregados
+  return 4096;
+}
+
+async function waitOllamaHealthy(baseUrl: string, maxWaitMs = 90_000): Promise<void> {
+  const start = Date.now();
+  while (Date.now() - start < maxWaitMs) {
+    try {
+      const res = await ollamaFetch(`${baseUrl}/api/tags`, { method: "GET" }, 8_000);
+      if (res.ok) return;
+    } catch {
+      /* llama-server a reiniciar após segfault */
+    }
+    await new Promise((r) => setTimeout(r, 5000));
+  }
 }
 
 function getOllamaNumPredict(): number {
@@ -83,6 +98,11 @@ export function isOllamaEmbedTimeout(err: unknown): boolean {
 
 export function isOllamaTimeout(err: unknown): boolean {
   return isOllamaGenerateTimeout(err) || isOllamaEmbedTimeout(err);
+}
+
+/** Timeout ou crash do llama-server — campo/edital pode continuar sem abortar o lote. */
+export function isOllamaRecoverableError(err: unknown): boolean {
+  return isOllamaTimeout(err) || isOllamaServerCrash(err);
 }
 
 let generateGapChain: Promise<void> = Promise.resolve();
@@ -118,15 +138,15 @@ function wrapOllamaFetchError(err: unknown, timeoutMs: number, label: string, ba
 }
 
 export function getMaxContextChars(): number {
-  const n = parseInt(process.env.OLLAMA_MAX_CONTEXT_CHARS || "10000", 10);
-  return Number.isFinite(n) ? Math.max(2000, n) : 10_000;
+  const n = parseInt(process.env.OLLAMA_MAX_CONTEXT_CHARS || "6000", 10);
+  return Number.isFinite(n) ? Math.max(2000, n) : 6000;
 }
 
 /** Limite de contexto por chamada de extração (top-k / bulk / janela). */
 export function getMaxFieldContextChars(): number {
   const fieldRaw = parseInt(process.env.PROCESS_EDITAL_MAX_FIELD_CONTEXT_CHARS || "", 10);
-  const fieldCap = Number.isFinite(fieldRaw) && fieldRaw > 0 ? fieldRaw : 4500;
-  return Math.min(getMaxContextChars(), Math.max(2000, fieldCap));
+  const fieldCap = Number.isFinite(fieldRaw) && fieldRaw > 0 ? fieldRaw : 3000;
+  return Math.min(getMaxContextChars(), Math.max(1500, fieldCap));
 }
 
 export function getTopKPackMaxChars(): number {
@@ -175,10 +195,18 @@ export async function ollamaGenerate(prompt: string): Promise<string> {
   const model = getOllamaModel();
   const timeoutMs = getOllamaGenerateTimeoutMs();
   try {
-    return await withRetry(() => ollamaGenerateOnce(prompt, baseUrl, model, timeoutMs), {
-      label: "ollama generate",
-      attempts: getOllamaGenerateRetries(),
-    });
+    return await withOllamaSlot(() =>
+      withRetry(() => ollamaGenerateOnce(prompt, baseUrl, model, timeoutMs), {
+        label: "ollama generate",
+        attempts: getOllamaGenerateRetries(),
+        onRetry: async (err) => {
+          if (isOllamaServerCrash(err)) {
+            console.warn("⚠️ ollama generate: llama-server crash — aguardando recuperação...");
+            await waitOllamaHealthy(baseUrl);
+          }
+        },
+      }),
+    );
   } finally {
     lastGenerateEndMs = Date.now();
   }
@@ -220,8 +248,16 @@ export async function ollamaEmbed(input: string): Promise<number[]> {
   const baseUrl = getOllamaBaseUrl();
   const model = getOllamaEmbedModel();
   const timeoutMs = getOllamaEmbedTimeoutMs();
-  return withRetry(() => ollamaEmbedOnce(input, baseUrl, model, timeoutMs), {
-    label: "ollama embed",
-    attempts: parseInt(process.env.OLLAMA_FETCH_RETRIES || "3", 10) || 3,
-  });
+  return withOllamaSlot(() =>
+    withRetry(() => ollamaEmbedOnce(input, baseUrl, model, timeoutMs), {
+      label: "ollama embed",
+      attempts: parseInt(process.env.OLLAMA_FETCH_RETRIES || "3", 10) || 3,
+      onRetry: async (err) => {
+        if (isOllamaServerCrash(err)) {
+          console.warn("⚠️ ollama embed: llama-server crash — aguardando recuperação...");
+          await waitOllamaHealthy(baseUrl);
+        }
+      },
+    }),
+  );
 }

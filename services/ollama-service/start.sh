@@ -2,10 +2,10 @@
 set -eu
 export OLLAMA_HOST="${OLLAMA_HOST:-0.0.0.0:11434}"
 export OLLAMA_NUM_PARALLEL="${OLLAMA_NUM_PARALLEL:-1}"
-export OLLAMA_MAX_LOADED_MODELS="${OLLAMA_MAX_LOADED_MODELS:-2}"
-export OLLAMA_KEEP_ALIVE="${OLLAMA_KEEP_ALIVE:-24h}"
+export OLLAMA_MAX_LOADED_MODELS="${OLLAMA_MAX_LOADED_MODELS:-1}"
+export OLLAMA_KEEP_ALIVE="${OLLAMA_KEEP_ALIVE:-5m}"
 # Default Ollama recente (262144) estoura RAM em Fargate CPU — cap explícito.
-export OLLAMA_CONTEXT_LENGTH="${OLLAMA_CONTEXT_LENGTH:-8192}"
+export OLLAMA_CONTEXT_LENGTH="${OLLAMA_CONTEXT_LENGTH:-4096}"
 
 echo "Starting ollama serve on ${OLLAMA_HOST} (num_parallel=${OLLAMA_NUM_PARALLEL} max_loaded=${OLLAMA_MAX_LOADED_MODELS} keep_alive=${OLLAMA_KEEP_ALIVE} context_length=${OLLAMA_CONTEXT_LENGTH})"
 ollama serve &
@@ -56,7 +56,7 @@ warm_chat_model() {
   echo "Warming chat model ${name} (load weights into RAM)..."
   if curl -sf -X POST "http://127.0.0.1:11434/api/generate" \
     -H "content-type: application/json" \
-    -d "{\"model\":\"${name}\",\"prompt\":\"ok\",\"stream\":false,\"options\":{\"num_predict\":8}}" >/dev/null; then
+    -d "{\"model\":\"${name}\",\"prompt\":\"ok\",\"stream\":false,\"options\":{\"num_predict\":8,\"num_ctx\":2048}}" >/dev/null; then
     echo "Warm-up generate ok: ${name}"
     return 0
   fi

@@ -92,9 +92,9 @@ jobs:
           CPU="${TASK_CPU:-8192}"
           MEM="${TASK_MEMORY:-16384}"
           NUM_PARALLEL="${OLLAMA_NUM_PARALLEL:-1}"
-          MAX_LOADED="${OLLAMA_MAX_LOADED_MODELS:-2}"
-          KEEP_ALIVE="${OLLAMA_KEEP_ALIVE:-24h}"
-          CTX_LEN="${OLLAMA_CONTEXT_LENGTH:-8192}"
+          MAX_LOADED="${OLLAMA_MAX_LOADED_MODELS:-1}"
+          KEEP_ALIVE="${OLLAMA_KEEP_ALIVE:-5m}"
+          CTX_LEN="${OLLAMA_CONTEXT_LENGTH:-4096}"
           SCHEME="${NLB_SCHEME:-internet-facing}"
 
           bash .github/scripts/cfn-delete-failed-stack.sh "${STACK_NAME}"

@@ -50,17 +50,17 @@ Parameters:
     Description: "Pedidos generate simultâneos; 1 evita fila/OOM em CPU"
   OllamaMaxLoadedModels:
     Type: Number
-    Default: 2
+    Default: 1
     MinValue: 1
     MaxValue: 4
-    Description: "Chat + embed carregados em RAM"
+    Description: "1 = só um modelo em RAM (troca chat/embed; evita OOM em Fargate CPU)"
   OllamaKeepAlive:
     Type: String
-    Default: "24h"
-    Description: "Evita unload do modelo entre chamadas (ex. 24h, -1)"
+    Default: "5m"
+    Description: "Unload após idle libera RAM entre chat e embed"
   OllamaContextLength:
     Type: Number
-    Default: 8192
+    Default: 4096
     Description: "Cap de contexto (tokens). Default Ollama recente (262144) causa OOM/segfault em Fargate CPU"
   DesiredCount:
     Type: Number

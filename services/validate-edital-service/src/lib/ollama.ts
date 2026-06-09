@@ -1,4 +1,5 @@
-import { describeFetchError } from "./fetchError";
+import { withOllamaSlot } from "../../../../shared/ollamaRequestSlot.ts";
+import { describeFetchError, isOllamaServerCrash } from "./fetchError";
 import { ollamaFetch } from "./ollamaHttp";
 import { getResolvedOllamaBaseUrl, getResolvedOllamaModel } from "./ollamaResolve";
 import { withRetry } from "./retry";
@@ -45,13 +46,26 @@ function getOllamaGenerateRetries(): number {
 
 function getOllamaNumCtx(): number {
   const raw = parseInt(process.env.OLLAMA_NUM_CTX || "", 10);
-  if (Number.isFinite(raw) && raw > 0) return Math.min(32_768, Math.max(1024, raw));
-  return Math.min(8192, Math.max(2048, Math.ceil(getMaxContextChars() / 2.5)));
+  if (Number.isFinite(raw) && raw > 0) return Math.min(16_384, Math.max(1024, raw));
+  return 4096;
+}
+
+async function waitOllamaHealthy(baseUrl: string, maxWaitMs = 90_000): Promise<void> {
+  const start = Date.now();
+  while (Date.now() - start < maxWaitMs) {
+    try {
+      const res = await ollamaFetch(`${baseUrl}/api/tags`, { method: "GET" }, 8_000);
+      if (res.ok) return;
+    } catch {
+      /* llama-server a reiniciar */
+    }
+    await new Promise((r) => setTimeout(r, 5000));
+  }
 }
 
 function getOllamaNumPredict(): number {
-  const raw = parseInt(process.env.OLLAMA_NUM_PREDICT || "512", 10);
-  return Number.isFinite(raw) ? Math.max(64, Math.min(2048, raw)) : 512;
+  const raw = parseInt(process.env.OLLAMA_NUM_PREDICT || "256", 10);
+  return Number.isFinite(raw) ? Math.max(64, Math.min(2048, raw)) : 256;
 }
 
 export function isOllamaGenerateTimeout(err: unknown): boolean {
@@ -109,21 +123,21 @@ function wrapOllamaFetchError(err: unknown, timeoutMs: number, label: string, ba
 }
 
 export function getMaxContextChars(): number {
-  const n = parseInt(process.env.OLLAMA_MAX_CONTEXT_CHARS || "10000", 10);
-  return Number.isFinite(n) ? Math.max(2000, n) : 10_000;
+  const n = parseInt(process.env.OLLAMA_MAX_CONTEXT_CHARS || "6000", 10);
+  return Number.isFinite(n) ? Math.max(2000, n) : 6000;
 }
 
 /** Tamanho máximo do bloco DOCUMENTO por chamada de auditoria. */
 export function getMaxAuditContextChars(): number {
   const validateRaw = parseInt(process.env.VALIDATE_AUDIT_MAX_CONTEXT_CHARS || "", 10);
   if (Number.isFinite(validateRaw) && validateRaw > 0) {
-    return Math.min(getMaxContextChars(), Math.max(2000, validateRaw));
+    return Math.min(getMaxContextChars(), Math.max(1500, validateRaw));
   }
   const sharedRaw = parseInt(process.env.PROCESS_EDITAL_MAX_FIELD_CONTEXT_CHARS || "", 10);
   if (Number.isFinite(sharedRaw) && sharedRaw > 0) {
     return Math.min(getMaxContextChars(), sharedRaw);
   }
-  return Math.min(getMaxContextChars(), 4500);
+  return Math.min(getMaxContextChars(), 3000);
 }
 
 async function ollamaGenerateOnce(prompt: string, baseUrl: string, model: string, timeoutMs: number): Promise<string> {
@@ -168,10 +182,18 @@ export async function ollamaGenerate(prompt: string): Promise<string> {
   const model = getResolvedOllamaModel();
   const timeoutMs = getOllamaGenerateTimeoutMs();
   try {
-    return await withRetry(() => ollamaGenerateOnce(prompt, baseUrl, model, timeoutMs), {
-      label: "ollama generate",
-      attempts: getOllamaGenerateRetries(),
-    });
+    return await withOllamaSlot(() =>
+      withRetry(() => ollamaGenerateOnce(prompt, baseUrl, model, timeoutMs), {
+        label: "ollama generate",
+        attempts: getOllamaGenerateRetries(),
+        onRetry: async (err) => {
+          if (isOllamaServerCrash(err)) {
+            console.warn("⚠️ ollama generate: llama-server crash — aguardando recuperação...");
+            await waitOllamaHealthy(baseUrl);
+          }
+        },
+      }),
+    );
   } finally {
     lastGenerateEndMs = Date.now();
   }

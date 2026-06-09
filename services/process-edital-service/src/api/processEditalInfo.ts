@@ -10,7 +10,7 @@ import {
   getMaxFieldContextChars,
   getOllamaGenerateTimeoutMs,
   getTopKPackMaxChars,
-  isOllamaTimeout,
+  isOllamaRecoverableError,
   ollamaEmbed,
   ollamaGenerate,
 } from "../lib/ollama";
@@ -922,7 +922,7 @@ async function tryWindowScan(
     try {
       ex = await extractFieldValue(field, edital, slice);
     } catch (e) {
-      if (isOllamaTimeout(e)) {
+      if (isOllamaRecoverableError(e)) {
         console.warn(`  🪟 janela ${wi + 1}: timeout no generate — abortando janelas restantes deste campo`);
         throw e;
       }
@@ -952,7 +952,7 @@ async function tryWindowScan(
         const hit = await runOne(wi);
         if (hit && typeof hit === "object" && "value" in hit) return hit;
       } catch (e) {
-        if (isOllamaTimeout(e)) {
+        if (isOllamaRecoverableError(e)) {
           return { value: null, rawJson: lastOut.rawJson, modelOutput: lastOut.modelOutput, evidence: null };
         }
         throw e;
@@ -1107,7 +1107,7 @@ async function tryFullDocumentChunkScan(
         };
       }
     } catch (e) {
-      if (isOllamaTimeout(e)) {
+      if (isOllamaRecoverableError(e)) {
         console.warn(`  📄 doc lote ${bi}/${batches.length}: timeout — próximo lote`);
         continue;
       }
@@ -1182,7 +1182,7 @@ async function tryTopKInBatches(
     try {
       ex = await extractFieldValue(field, edital, text);
     } catch (e) {
-      if (isOllamaTimeout(e)) {
+      if (isOllamaRecoverableError(e)) {
         timedOut = true;
         console.warn(
           `  🔝 top-k lote ${b + 1}: timeout (${getOllamaGenerateTimeoutMs()}ms) — próximo lote top-k`,
@@ -1249,7 +1249,7 @@ async function extractFieldWithTopKThenWindows(
     try {
       qEmb = await ollamaEmbed(query);
     } catch (e) {
-      if (isOllamaTimeout(e)) {
+      if (isOllamaRecoverableError(e)) {
         console.warn(`  🔝 top-k campo=${field}: embed timeout — pulando top-k`);
       } else {
         throw e;
@@ -1940,7 +1940,7 @@ async function processOneEdital(
         );
         return { f, value, evidence };
       } catch (e) {
-        if (isOllamaTimeout(e)) {
+        if (isOllamaRecoverableError(e)) {
           console.warn(
             `  ${tag} ⚠️ campo=${f}: timeout Ollama (${getOllamaGenerateTimeoutMs()}ms) — campo ignorado; edital continua`,
           );

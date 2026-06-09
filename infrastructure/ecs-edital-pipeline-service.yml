@@ -51,7 +51,7 @@ Parameters:
     Default: 180000
   OllamaMaxContextChars:
     Type: Number
-    Default: 10000
+    Default: 6000
   ProcessEditalTopK:
     Type: Number
     Default: 40

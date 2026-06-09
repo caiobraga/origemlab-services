@@ -4,6 +4,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { createSupabase } from "../lib/supabase";
+import { isOllamaServerCrash } from "../lib/fetchError";
 import { getMaxAuditContextChars, isOllamaTimeout, ollamaGenerate } from "../lib/ollama";
 import { initOllamaBaseUrl } from "../lib/ollamaResolve";
 import { mapPool, readConcurrencyEnv } from "../lib/concurrency.js";
@@ -818,7 +819,31 @@ async function validateOneEdital(
 
     const auditBefore = hasMeaningfulExtractedValue(field, before) ? before : null;
     const evidence = evidenceMap[field] as FieldEvidence | undefined;
-    const audited = await callAuditForField(field, edital, auditBefore, evidence, rowsRaw);
+    let audited: Awaited<ReturnType<typeof callAuditForField>>;
+    try {
+      audited = await callAuditForField(field, edital, auditBefore, evidence, rowsRaw);
+    } catch (e) {
+      if (isOllamaTimeout(e) || isOllamaServerCrash(e)) {
+        console.warn(
+          `  ⚠️ audit ${field}: Ollama indisponível (${e instanceof Error ? e.message : String(e)}) — campo mantido`,
+        );
+        return {
+          field,
+          report: {
+            status: "inconclusive",
+            reason: "ollama_unavailable",
+            before,
+            after: before,
+            note: e instanceof Error ? e.message : String(e),
+          },
+          finalValue: before,
+          auditedOk: true,
+          before,
+          dbUpdate: null,
+        };
+      }
+      throw e;
+    }
     let finalValue = audited.ok ? audited.value : before;
 
     let polishMeta: { applied: boolean; raw?: string; note?: string } = { applied: false, note: "skipped" };
@@ -830,9 +855,9 @@ async function validateOneEdital(
           finalValue = polished.text;
           polishMeta = { applied: true, raw: polished.raw };
         } catch (e) {
-          if (isOllamaTimeout(e)) {
-            console.warn(`  ✓ polish ${field}: timeout — mantém texto auditado`);
-            polishMeta = { applied: false, note: "polish_timeout" };
+          if (isOllamaTimeout(e) || isOllamaServerCrash(e)) {
+            console.warn(`  ✓ polish ${field}: Ollama indisponível — mantém texto auditado`);
+            polishMeta = { applied: false, note: "polish_ollama_unavailable" };
           } else {
             throw e;
           }
