@@ -1,7 +1,7 @@
 AWSTemplateFormatVersion: "2010-09-09"
 Description: >
-  origemlab edital-pipeline on ECS Fargate — process-edital-info + validate-editais-corretos
-  num único container. Default continuous (1 ECS Service 24/7 com loop no container).
+  origemlab edital-pipeline on ECS Fargate — validate-editais-corretos primeiro, depois
+  process-edital-info (default 0 editais). Um container; continuous = loop 24/7.
 
 Parameters:
   ProjectName:
@@ -119,6 +119,10 @@ Parameters:
   WorkerIdleMsNoWork:
     Type: Number
     Default: 120000
+  PipelineProcessLimit:
+    Type: Number
+    Default: 0
+    Description: "Máx. editais na fase process após validate; 0 = só validate nesta iteração"
 
 Conditions:
   IsContinuous: !Equals [!Ref OrchestrationMode, continuous]
@@ -238,6 +242,8 @@ Resources:
               Value: !Ref ValidateFieldConcurrency
             - Name: VALIDATE_FORCE_REVALIDATE
               Value: !Ref ValidateForceRevalidate
+            - Name: PIPELINE_PROCESS_LIMIT
+              Value: !Ref PipelineProcessLimit
             - Name: ECS_WORKER_LOOP
               Value: !If [IsContinuous, "1", "0"]
             - Name: WORKER_IDLE_MS_AFTER_WORK

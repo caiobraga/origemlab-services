@@ -1,6 +1,6 @@
 /**
- * Pipeline único: process-edital-info → validate-editais-corretos.
- * Substitui dois ECS Services contínuos por uma task agendada (ou loop opcional).
+ * Pipeline único: validate-editais-corretos → process-edital-info (opcional).
+ * Default: valida o backlog primeiro; process-edital fica em 0 editais por iteração.
  */
 import "./load-env.js";
 
@@ -22,12 +22,84 @@ function workerIdleMsNoWork(): number {
   return Number.isFinite(n) ? Math.max(0, n) : 120000;
 }
 
-function skipProcessPhase(): boolean {
-  return String(process.env.PIPELINE_SKIP_PROCESS || "").trim() === "1";
-}
-
 function skipValidatePhase(): boolean {
   return String(process.env.PIPELINE_SKIP_VALIDATE || "").trim() === "1";
+}
+
+/** Máx. editais na fase process após validate. Default 0 = não processar nesta iteração. */
+function pipelineProcessLimit(): number {
+  if (String(process.env.PIPELINE_SKIP_PROCESS || "").trim() === "1") return 0;
+  const raw = String(process.env.PIPELINE_PROCESS_LIMIT ?? "0").trim();
+  const n = parseInt(raw, 10);
+  return Number.isFinite(n) && n > 0 ? n : 0;
+}
+
+async function withProcessEditalLimit<T>(limit: number, fn: () => Promise<T>): Promise<T> {
+  const prev = process.env.PROCESS_EDITAL_LIMIT;
+  process.env.PROCESS_EDITAL_LIMIT = String(limit);
+  try {
+    return await fn();
+  } finally {
+    if (prev === undefined) delete process.env.PROCESS_EDITAL_LIMIT;
+    else process.env.PROCESS_EDITAL_LIMIT = prev;
+  }
+}
+
+async function runValidatePhase(): Promise<{ hadWork: boolean; failed: boolean }> {
+  if (skipValidatePhase()) {
+    console.log("⏭️ PIPELINE_SKIP_VALIDATE=1 — fase validate-edital ignorada.");
+    return { hadWork: false, failed: false };
+  }
+
+  console.log("\n════════════════════════════════════════");
+  console.log("  Fase 1/2 — validate-editais-corretos");
+  console.log("════════════════════════════════════════\n");
+
+  const prevCode = process.exitCode;
+  let hadWork = false;
+  let failed = false;
+  try {
+    const r = await runValidateBatch();
+    hadWork = r.hadWork;
+  } catch (e) {
+    failed = true;
+    console.error("❌ Fase validate-edital falhou:", e);
+  }
+  if (process.exitCode && process.exitCode !== 0) {
+    failed = true;
+    process.exitCode = prevCode ?? 0;
+  }
+  return { hadWork, failed };
+}
+
+async function runProcessPhase(limit: number): Promise<{ hadWork: boolean; failed: boolean }> {
+  if (limit <= 0) {
+    console.log(
+      "\n⏭️ PIPELINE_PROCESS_LIMIT=0 — fase process-edital ignorada (0 editais nesta iteração).",
+    );
+    console.log("   Para reativar: PIPELINE_PROCESS_LIMIT=N ou PIPELINE_SKIP_PROCESS=0 + limite > 0.");
+    return { hadWork: false, failed: false };
+  }
+
+  console.log("\n════════════════════════════════════════");
+  console.log(`  Fase 2/2 — process-edital-info (limite=${limit})`);
+  console.log("════════════════════════════════════════\n");
+
+  const prevCode = process.exitCode;
+  let hadWork = false;
+  let failed = false;
+  try {
+    const r = await withProcessEditalLimit(limit, () => runProcessBatch());
+    hadWork = r.hadWork;
+  } catch (e) {
+    failed = true;
+    console.error("❌ Fase process-edital falhou:", e);
+  }
+  if (process.exitCode && process.exitCode !== 0) {
+    failed = true;
+    process.exitCode = prevCode ?? 0;
+  }
+  return { hadWork, failed };
 }
 
 export async function runEditalPipelineOnce(): Promise<{
@@ -36,66 +108,32 @@ export async function runEditalPipelineOnce(): Promise<{
   processFailed: boolean;
   validateFailed: boolean;
 }> {
-  let processHadWork = false;
-  let validateHadWork = false;
-  let processFailed = false;
-  let validateFailed = false;
+  const processLimit = pipelineProcessLimit();
 
-  if (!skipProcessPhase()) {
-    console.log("\n════════════════════════════════════════");
-    console.log("  Fase 1/2 — process-edital-info");
-    console.log("════════════════════════════════════════\n");
-    const prevCode = process.exitCode;
-    try {
-      const r = await runProcessBatch();
-      processHadWork = r.hadWork;
-    } catch (e) {
-      processFailed = true;
-      console.error("❌ Fase process-edital falhou:", e);
-    }
-    if (process.exitCode && process.exitCode !== 0) {
-      processFailed = true;
-      process.exitCode = prevCode ?? 0;
-    }
-  } else {
-    console.log("⏭️ PIPELINE_SKIP_PROCESS=1 — fase process-edital ignorada.");
-  }
-
-  if (!skipValidatePhase()) {
-    console.log("\n════════════════════════════════════════");
-    console.log("  Fase 2/2 — validate-editais-corretos");
-    console.log("════════════════════════════════════════\n");
-    const prevCode = process.exitCode;
-    try {
-      const r = await runValidateBatch();
-      validateHadWork = r.hadWork;
-    } catch (e) {
-      validateFailed = true;
-      console.error("❌ Fase validate-edital falhou:", e);
-    }
-    if (process.exitCode && process.exitCode !== 0) {
-      validateFailed = true;
-      process.exitCode = prevCode ?? 0;
-    }
-  } else {
-    console.log("⏭️ PIPELINE_SKIP_VALIDATE=1 — fase validate-edital ignorada.");
-  }
+  const validate = await runValidatePhase();
+  const process = await runProcessPhase(processLimit);
 
   console.log(
-    `\n✅ Pipeline concluído. process_hadWork=${processHadWork} validate_hadWork=${validateHadWork} process_failed=${processFailed} validate_failed=${validateFailed}`,
+    `\n✅ Pipeline concluído. validate_hadWork=${validate.hadWork} process_hadWork=${process.hadWork} validate_failed=${validate.failed} process_failed=${process.failed} process_limit=${processLimit}`,
   );
 
-  if (processFailed || validateFailed) {
+  if (validate.failed || process.failed) {
     process.exitCode = 1;
   }
 
-  return { processHadWork, validateHadWork, processFailed, validateFailed };
+  return {
+    processHadWork: process.hadWork,
+    validateHadWork: validate.hadWork,
+    processFailed: process.failed,
+    validateFailed: validate.failed,
+  };
 }
 
 async function main() {
-  console.log("🔗 edital-pipeline-service (process → validate)");
+  const processLimit = pipelineProcessLimit();
+  console.log("🔗 edital-pipeline-service (validate → process)");
   console.log(
-    `   skip_process=${skipProcessPhase()} skip_validate=${skipValidatePhase()} worker_loop=${ecsWorkerLoopEnabled()}`,
+    `   skip_validate=${skipValidatePhase()} process_limit=${processLimit} worker_loop=${ecsWorkerLoopEnabled()}`,
   );
 
   if (ecsWorkerLoopEnabled()) {

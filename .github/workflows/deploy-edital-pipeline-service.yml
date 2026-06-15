@@ -1,4 +1,4 @@
-# ECS deploy: edital-pipeline (process-edital + validate-edital num único container).
+# ECS deploy: edital-pipeline (validate-edital primeiro; process-edital default 0 editais).
 # Edital pipeline: default continuous (1 ECS Service). Agendado: EDITAL_PIPELINE_ORCHESTRATION_MODE=scheduled
 #
 # Required repo variables:
@@ -95,6 +95,7 @@ jobs:
           EDITAL_PIPELINE_ORCHESTRATION_MODE: ${{ vars.EDITAL_PIPELINE_ORCHESTRATION_MODE }}
           WORKER_IDLE_MS_AFTER_WORK: ${{ vars.WORKER_IDLE_MS_AFTER_WORK }}
           WORKER_IDLE_MS_NO_WORK: ${{ vars.WORKER_IDLE_MS_NO_WORK }}
+          PIPELINE_PROCESS_LIMIT: ${{ vars.PIPELINE_PROCESS_LIMIT }}
           EVENT_BUS_NAME: ${{ vars.EVENT_BUS_NAME }}
         run: |
           set -euo pipefail
@@ -198,6 +199,9 @@ jobs:
           [ -n "${VALIDATE_FIELD_CONCURRENCY:-}" ] && OVERRIDES+=("ValidateFieldConcurrency=${VALIDATE_FIELD_CONCURRENCY}")
           [ -n "${WORKER_IDLE_MS_AFTER_WORK:-}" ] && OVERRIDES+=("WorkerIdleMsAfterWork=${WORKER_IDLE_MS_AFTER_WORK}")
           [ -n "${WORKER_IDLE_MS_NO_WORK:-}" ] && OVERRIDES+=("WorkerIdleMsNoWork=${WORKER_IDLE_MS_NO_WORK}")
+          _proc_lim="$(printf '%s' "${PIPELINE_PROCESS_LIMIT:-0}" | tr -d '\r' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+          [[ "${_proc_lim}" =~ ^[0-9]+$ ]] || _proc_lim=0
+          OVERRIDES+=("PipelineProcessLimit=${_proc_lim}")
 
           if ! aws cloudformation deploy \
             --template-file infrastructure/ecs-edital-pipeline-service.yml \
