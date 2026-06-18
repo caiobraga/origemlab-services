@@ -1,6 +1,6 @@
 /**
- * Pipeline único: validate-editais-corretos → process-edital-info (opcional).
- * Default: valida o backlog primeiro; process-edital fica em 0 editais por iteração.
+ * Pipeline único: validate-editais-corretos → process-edital-info (até N editais) → repete.
+ * Cada iteração: valida o backlog primeiro, depois processa até PIPELINE_PROCESS_LIMIT editais (default 50).
  */
 import "./load-env.js";
 
@@ -26,10 +26,12 @@ function skipValidatePhase(): boolean {
   return String(process.env.PIPELINE_SKIP_VALIDATE || "").trim() === "1";
 }
 
-/** Máx. editais na fase process após validate. Default 0 = não processar nesta iteração. */
+const DEFAULT_PIPELINE_PROCESS_LIMIT = 50;
+
+/** Máx. editais na fase process após validate. Default 50; 0 = não processar nesta iteração. */
 function pipelineProcessLimit(): number {
   if (String(process.env.PIPELINE_SKIP_PROCESS || "").trim() === "1") return 0;
-  const raw = String(process.env.PIPELINE_PROCESS_LIMIT ?? "0").trim();
+  const raw = String(process.env.PIPELINE_PROCESS_LIMIT ?? String(DEFAULT_PIPELINE_PROCESS_LIMIT)).trim();
   const n = parseInt(raw, 10);
   return Number.isFinite(n) && n > 0 ? n : 0;
 }
@@ -131,7 +133,7 @@ export async function runEditalPipelineOnce(): Promise<{
 
 async function main() {
   const processLimit = pipelineProcessLimit();
-  console.log("🔗 edital-pipeline-service (validate → process)");
+  console.log("🔗 edital-pipeline-service (validate → process → validate …)");
   console.log(
     `   skip_validate=${skipValidatePhase()} process_limit=${processLimit} worker_loop=${ecsWorkerLoopEnabled()}`,
   );
@@ -139,7 +141,7 @@ async function main() {
   if (ecsWorkerLoopEnabled()) {
     let iter = 0;
     console.log(
-      `🔄 ECS_WORKER_LOOP=1 — pipeline em ciclo. Idle após trabalho=${workerIdleMsAfterWork()}ms; fila vazia=${workerIdleMsNoWork()}ms`,
+      `🔄 ECS_WORKER_LOOP=1 — ciclo: validate → process (até ${processLimit}) → validate. Idle após trabalho=${workerIdleMsAfterWork()}ms; fila vazia=${workerIdleMsNoWork()}ms`,
     );
     while (true) {
       iter += 1;

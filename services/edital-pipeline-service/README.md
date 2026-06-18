@@ -1,11 +1,12 @@
 # edital-pipeline-service
 
-Um único container ECS executa em sequência:
+Um único container ECS (`origemlab-edital-pipeline-worker`) executa em ciclo:
 
-1. **process-edital-info** — extrai campos dos editais (Ollama)
-2. **validate-editais-corretos** — audita e grava `editais_corretos`
+1. **validate-editais-corretos** — audita campos e grava `editais_corretos`
+2. **process-edital-info** — extrai campos de até **50** editais (configurável via `PIPELINE_PROCESS_LIMIT`)
+3. Volta ao passo 1
 
-Substitui dois workers Fargate separados por **um único ECS Service** (default **continuous**, 24/7) que corre process + validate em loop.
+Substitui dois workers Fargate separados por **um único ECS Service** (default **continuous**, 24/7).
 
 **Produção:** `OLLAMA_BASE_URL=http://origemlab-ollama-nlb-312422980eebe2d0.elb.us-east-1.amazonaws.com:11434` (GitHub Variables / task env).
 
@@ -20,13 +21,20 @@ npm install
 npm run start
 ```
 
-Opcional: `PIPELINE_SKIP_PROCESS=1` ou `PIPELINE_SKIP_VALIDATE=1` para correr só uma fase.
+Variáveis úteis:
+
+| Variável | Default | Efeito |
+|----------|---------|--------|
+| `PIPELINE_PROCESS_LIMIT` | `50` | Máx. editais processados após cada fase validate |
+| `PIPELINE_SKIP_PROCESS` | off | Só validate (equivalente a limite 0) |
+| `PIPELINE_SKIP_VALIDATE` | off | Só process |
+| `ECS_WORKER_LOOP` | `1` em continuous | Repete validate → process indefinidamente |
 
 ## Deploy
 
 `deploy-edital-pipeline-service.yml` → ECR `origemlab-edital-pipeline-service` + `infrastructure/ecs-edital-pipeline-service.yml`.
 
-**Default (AWS):** `OrchestrationMode=continuous` — cluster `origemlab-edital-pipeline` com **1 serviço** (`origemlab-edital-pipeline-worker`), `ECS_WORKER_LOOP=1`.
+**Default (AWS):** `OrchestrationMode=continuous` — cluster `origemlab-edital-pipeline` com **1 serviço** (`origemlab-edital-pipeline-worker`), `ECS_WORKER_LOOP=1`, `PIPELINE_PROCESS_LIMIT=50`.
 
 **Ollama lento / `UND_ERR_HEADERS_TIMEOUT`:** reduzir **tamanho do contexto** e **paralelismo** costuma ajudar mais do que só subir timeout.
 

@@ -199,8 +199,8 @@ jobs:
           [ -n "${VALIDATE_FIELD_CONCURRENCY:-}" ] && OVERRIDES+=("ValidateFieldConcurrency=${VALIDATE_FIELD_CONCURRENCY}")
           [ -n "${WORKER_IDLE_MS_AFTER_WORK:-}" ] && OVERRIDES+=("WorkerIdleMsAfterWork=${WORKER_IDLE_MS_AFTER_WORK}")
           [ -n "${WORKER_IDLE_MS_NO_WORK:-}" ] && OVERRIDES+=("WorkerIdleMsNoWork=${WORKER_IDLE_MS_NO_WORK}")
-          _proc_lim="$(printf '%s' "${PIPELINE_PROCESS_LIMIT:-0}" | tr -d '\r' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
-          [[ "${_proc_lim}" =~ ^[0-9]+$ ]] || _proc_lim=0
+          _proc_lim="$(printf '%s' "${PIPELINE_PROCESS_LIMIT:-50}" | tr -d '\r' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+          [[ "${_proc_lim}" =~ ^[0-9]+$ ]] || _proc_lim=50
           OVERRIDES+=("PipelineProcessLimit=${_proc_lim}")
 
           if ! aws cloudformation deploy \

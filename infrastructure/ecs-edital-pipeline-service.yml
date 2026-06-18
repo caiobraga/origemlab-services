@@ -121,7 +121,7 @@ Parameters:
     Default: 120000
   PipelineProcessLimit:
     Type: Number
-    Default: 0
+    Default: 50
     Description: "Máx. editais na fase process após validate; 0 = só validate nesta iteração"
 
 Conditions:
