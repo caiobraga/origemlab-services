@@ -96,6 +96,7 @@ jobs:
           WORKER_IDLE_MS_AFTER_WORK: ${{ vars.WORKER_IDLE_MS_AFTER_WORK }}
           WORKER_IDLE_MS_NO_WORK: ${{ vars.WORKER_IDLE_MS_NO_WORK }}
           PIPELINE_PROCESS_LIMIT: ${{ vars.PIPELINE_PROCESS_LIMIT }}
+          PIPELINE_VALIDATE_LIMIT: ${{ vars.PIPELINE_VALIDATE_LIMIT }}
           EVENT_BUS_NAME: ${{ vars.EVENT_BUS_NAME }}
         run: |
           set -euo pipefail
@@ -202,6 +203,10 @@ jobs:
           _proc_lim="$(printf '%s' "${PIPELINE_PROCESS_LIMIT:-50}" | tr -d '\r' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
           [[ "${_proc_lim}" =~ ^[0-9]+$ ]] || _proc_lim=50
           OVERRIDES+=("PipelineProcessLimit=${_proc_lim}")
+
+          _val_lim="$(printf '%s' "${PIPELINE_VALIDATE_LIMIT:-50}" | tr -d '\r' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+          [[ "${_val_lim}" =~ ^[0-9]+$ ]] || _val_lim=50
+          OVERRIDES+=("PipelineValidateLimit=${_val_lim}")
 
           if ! aws cloudformation deploy \
             --template-file infrastructure/ecs-edital-pipeline-service.yml \

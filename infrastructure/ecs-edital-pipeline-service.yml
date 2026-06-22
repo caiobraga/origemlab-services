@@ -1,7 +1,7 @@
 AWSTemplateFormatVersion: "2010-09-09"
 Description: >
-  origemlab edital-pipeline on ECS Fargate — validate-editais-corretos primeiro, depois
-  process-edital-info (default 0 editais). Um container; continuous = loop 24/7.
+  origemlab edital-pipeline on ECS Fargate — process-edital-info (até N editais), depois
+  validate-editais-corretos só nos IDs recém-processados. Um container; continuous = loop 24/7.
 
 Parameters:
   ProjectName:
@@ -115,7 +115,7 @@ Parameters:
     Description: "continuous = 1 ECS Service 24/7; scheduled = só EventBridge Scheduler"
   WorkerIdleMsAfterWork:
     Type: Number
-    Default: 8000
+    Default: 4000
   WorkerIdleMsNoWork:
     Type: Number
     Default: 120000
@@ -123,6 +123,10 @@ Parameters:
     Type: Number
     Default: 50
     Description: "Máx. editais na fase process após validate; 0 = só validate nesta iteração"
+  PipelineValidateLimit:
+    Type: Number
+    Default: 50
+    Description: "Só com PIPELINE_VALIDATE_BACKLOG=1 — limite do validate de backlog legado"
 
 Conditions:
   IsContinuous: !Equals [!Ref OrchestrationMode, continuous]
@@ -244,6 +248,8 @@ Resources:
               Value: !Ref ValidateForceRevalidate
             - Name: PIPELINE_PROCESS_LIMIT
               Value: !Ref PipelineProcessLimit
+            - Name: PIPELINE_VALIDATE_LIMIT
+              Value: !Ref PipelineValidateLimit
             - Name: ECS_WORKER_LOOP
               Value: !If [IsContinuous, "1", "0"]
             - Name: WORKER_IDLE_MS_AFTER_WORK

@@ -1034,18 +1034,53 @@ async function logValidateFunnelStats(supabase: SupabaseClient, backlogOnly: boo
   );
 }
 
+function parseValidateEditalIds(): string[] {
+  const raw = String(process.env.VALIDATE_EDITAL_IDS || "").trim();
+  if (!raw) return [];
+  return raw
+    .split(/[,\s]+/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
+async function fetchEditaisByIds(supabase: SupabaseClient, ids: string[]): Promise<EditalRow[]> {
+  const selectCols =
+    "id,numero,titulo,descricao,processado_em,criado_em,atualizado_em,data_publicacao,data_encerramento,status,valor,area,orgao,fonte,link,informacoes_processadas_em,informacoes_extracao_evidence,valor_projeto,prazo_inscricao,localizacao,vagas,is_researcher,is_company,sobre_programa,criterios_elegibilidade,timeline_estimada";
+  const unique = [...new Set(ids)];
+  const out: EditalRow[] = [];
+  const chunkSize = 100;
+  for (let i = 0; i < unique.length; i += chunkSize) {
+    const chunk = unique.slice(i, i + chunkSize);
+    const { data, error } = await supabase.from("editais").select(selectCols).in("id", chunk);
+    if (error) throw new Error(`Erro ao buscar editais por id: ${error.message}`);
+    out.push(...((data ?? []) as EditalRow[]));
+  }
+  const order = new Map(unique.map((id, idx) => [id, idx]));
+  out.sort((a, b) => (order.get(a.id) ?? 0) - (order.get(b.id) ?? 0));
+  return out;
+}
+
 export async function runValidateBatch(): Promise<{ hadWork: boolean }> {
   await initOllamaBaseUrl();
   const supabase = createSupabase();
 
+  const explicitIds = parseValidateEditalIds();
   const limitRaw = parseInt(process.env.VALIDATE_EDITAIS_LIMIT || "0", 10);
-  const totalLimit = Number.isFinite(limitRaw) && limitRaw > 0 ? limitRaw : Infinity;
+  const totalLimit =
+    explicitIds.length > 0
+      ? explicitIds.length
+      : Number.isFinite(limitRaw) && limitRaw > 0
+        ? limitRaw
+        : Infinity;
   const batchSize = Math.max(20, parseInt(process.env.VALIDATE_EDITAIS_BATCH || "200", 10) || 200);
   const editalConcurrency = readConcurrencyEnv("VALIDATE_EDITAL_CONCURRENCY", 2, 6);
   const reprocessValidated = String(process.env.VALIDATE_REPROCESS || "").trim() === "1";
-  const backlogOnly = reprocessValidated
-    ? String(process.env.VALIDATE_BACKLOG_ONLY || "").trim() === "1"
-    : String(process.env.VALIDATE_BACKLOG_ONLY || "1").trim() !== "0";
+  const backlogOnly =
+    explicitIds.length > 0
+      ? false
+      : reprocessValidated
+        ? String(process.env.VALIDATE_BACKLOG_ONLY || "").trim() === "1"
+        : String(process.env.VALIDATE_BACKLOG_ONLY || "1").trim() !== "0";
   const delayDefault = editalConcurrency > 1 ? "0" : "3000";
   const betweenDefault = editalConcurrency > 1 ? "0" : "6000";
   const delayMs = Math.max(0, parseInt(process.env.API_REQUEST_DELAY_MS || delayDefault, 10) || 0);
@@ -1059,7 +1094,7 @@ export async function runValidateBatch(): Promise<{ hadWork: boolean }> {
 
   console.log("🔎 validate-edital-service (Ollama-only)");
   console.log(
-    `📦 limit=${Number.isFinite(totalLimit) ? totalLimit : "∞"} batch=${batchSize} editalConcurrency=${editalConcurrency} fieldConcurrency=${readConcurrencyEnv("VALIDATE_FIELD_CONCURRENCY", 1, 4)} delayMs=${delayMs} betweenEditaisMs=${betweenEditaisMs} backlogOnly=${backlogOnly} reprocess=${reprocessValidated}`,
+    `📦 limit=${Number.isFinite(totalLimit) ? totalLimit : "∞"} explicit_ids=${explicitIds.length} batch=${batchSize} editalConcurrency=${editalConcurrency} fieldConcurrency=${readConcurrencyEnv("VALIDATE_FIELD_CONCURRENCY", 1, 4)} delayMs=${delayMs} betweenEditaisMs=${betweenEditaisMs} backlogOnly=${backlogOnly} reprocess=${reprocessValidated}`,
   );
 
   let ok = 0;
@@ -1070,6 +1105,64 @@ export async function runValidateBatch(): Promise<{ hadWork: boolean }> {
 
   const selectCols =
     "id,numero,titulo,descricao,processado_em,criado_em,atualizado_em,data_publicacao,data_encerramento,status,valor,area,orgao,fonte,link,informacoes_processadas_em,informacoes_extracao_evidence,valor_projeto,prazo_inscricao,localizacao,vagas,is_researcher,is_company,sobre_programa,criterios_elegibilidade,timeline_estimada";
+
+  if (explicitIds.length > 0) {
+    const rows = await fetchEditaisByIds(supabase, explicitIds);
+    const page = rows.filter(
+      (row) =>
+        (reprocessValidated || !corretosIds.has(row.id)) && listNonNullExtractedFields(row).length > 0,
+    );
+    if (page.length > 0) hadPotentialWork = true;
+    console.log(
+      `🎯 VALIDATE_EDITAL_IDS — ${explicitIds.length} id(s) solicitado(s) → ${rows.length} encontrado(s) → ${page.length} elegível(is) para validação`,
+    );
+
+    const processEdital = async (edital: EditalRow) => {
+      const nonNullFields = listNonNullExtractedFields(edital);
+      const fieldsLabel = nonNullFields.length ? nonNullFields.join(", ") : "nenhum";
+      console.log(`\n🧾 ${edital.numero || "N/A"} — ${edital.titulo} (${edital.fonte}) [campos=${fieldsLabel}]`);
+      if (nonNullFields.length === 0) {
+        skipped++;
+        console.log("  ⚠️ Pulado: sem_campos_extraidos_em_editais");
+        return;
+      }
+      try {
+        const r = await validateOneEdital(supabase, edital);
+        if (r.inserted) {
+          ok++;
+          console.log("  ✅ Salvo em editais_corretos");
+        } else {
+          skipped++;
+          const why = r.reasons.length ? r.reasons.join(", ") : "nada para salvar";
+          console.log(`  ⚠️ Pulado: ${why}`);
+        }
+      } catch (e) {
+        fail++;
+        console.error("  ❌ Falhou:", e instanceof Error ? e.message : String(e));
+      }
+    };
+
+    if (editalConcurrency > 1 && page.length > 1) {
+      const chunkSize = editalConcurrency;
+      for (let start = 0; start < page.length; start += chunkSize) {
+        const chunk = page.slice(start, start + chunkSize);
+        await Promise.all(chunk.map((edital) => processEdital(edital)));
+        if (betweenEditaisMs > 0 && start + chunkSize < page.length) {
+          await new Promise((r) => setTimeout(r, betweenEditaisMs));
+        }
+      }
+    } else {
+      for (const edital of page) {
+        await processEdital(edital);
+        if (delayMs > 0) await new Promise((r) => setTimeout(r, delayMs));
+        if (betweenEditaisMs > 0) await new Promise((r) => setTimeout(r, betweenEditaisMs));
+      }
+    }
+
+    console.log(`\n✅ Concluído. Sucesso: ${ok} | Pulados: ${skipped} | Falhas: ${fail}`);
+    if (fail > 0 && !ecsWorkerLoopEnabled()) process.exitCode = 1;
+    return { hadWork: hadPotentialWork };
+  }
 
   for (let offset = 0; seen < totalLimit; offset += batchSize) {
     const remainingQuota = Number.isFinite(totalLimit) ? Math.max(0, totalLimit - seen) : batchSize;

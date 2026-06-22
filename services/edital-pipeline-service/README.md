@@ -2,9 +2,11 @@
 
 Um único container ECS (`origemlab-edital-pipeline-worker`) executa em ciclo:
 
-1. **validate-editais-corretos** — audita campos e grava `editais_corretos`
-2. **process-edital-info** — extrai campos de até **50** editais (configurável via `PIPELINE_PROCESS_LIMIT`)
+1. **process-edital-info** — extrai campos de até **50** editais (configurável via `PIPELINE_PROCESS_LIMIT`)
+2. **validate-editais-corretos** — valida **somente** os editais processados com sucesso no passo 1
 3. Volta ao passo 1
+
+Modo legado (`PIPELINE_VALIDATE_BACKLOG=1`): validate do backlog **antes** do process (comportamento antigo).
 
 Substitui dois workers Fargate separados por **um único ECS Service** (default **continuous**, 24/7).
 
@@ -25,10 +27,15 @@ Variáveis úteis:
 
 | Variável | Default | Efeito |
 |----------|---------|--------|
-| `PIPELINE_PROCESS_LIMIT` | `50` | Máx. editais processados após cada fase validate |
-| `PIPELINE_SKIP_PROCESS` | off | Só validate (equivalente a limite 0) |
-| `PIPELINE_SKIP_VALIDATE` | off | Só process |
-| `ECS_WORKER_LOOP` | `1` em continuous | Repete validate → process indefinidamente |
+| `PIPELINE_PROCESS_LIMIT` | `50` | Máx. editais processados por iteração |
+| `PIPELINE_VALIDATE_BACKLOG` | off | `1` = validate do backlog **antes** do process (legado) |
+| `PIPELINE_VALIDATE_LIMIT` | `50` | Limite do validate em modo backlog legado |
+| `PIPELINE_PROCESS_FILTERS` | on | `0` desliga filtros automáticos na fase process |
+| `PIPELINE_SKIP_PROCESS` | off | Só validate |
+| `PIPELINE_SKIP_VALIDATE` | off | Só process (sem validate após o lote) |
+| `ECS_WORKER_LOOP` | `1` em continuous | Repete process → validate indefinidamente |
+
+Na fase **process**, o pipeline liga por padrão `PROCESS_EDITAL_BACKLOG_ONLY`, `CHUNKS_ONLY` e `WEAK_ONLY`. Na fase **validate**, usa `VALIDATE_EDITAL_IDS` com os IDs do lote recém-processado.
 
 ## Deploy
 

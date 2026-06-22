@@ -193,25 +193,32 @@ function filterEditaisForProcessBatch(
     weakOnly: boolean;
     corretosIds: Set<string>;
     chunkRank: Map<string, number> | null;
+    quiet?: boolean;
   },
 ): EditalInfo[] {
   let out = editais;
   if (opts.backlogOnly) {
     const before = out.length;
     out = out.filter((e) => !opts.corretosIds.has(e.id));
-    console.log(`📋 PROCESS_EDITAL_BACKLOG_ONLY=1 — ${before} → ${out.length} (fora de editais_corretos)`);
+    if (!opts.quiet) {
+      console.log(`📋 PROCESS_EDITAL_BACKLOG_ONLY=1 — ${before} → ${out.length} (fora de editais_corretos)`);
+    }
   }
   if (opts.chunksOnly && opts.chunkRank?.size) {
     const before = out.length;
     out = out.filter((e) => opts.chunkRank!.has(e.id));
-    console.log(`📋 PROCESS_EDITAL_CHUNKS_ONLY=1 — ${before} → ${out.length} (com chunks em documents)`);
-  } else if (opts.chunksOnly && !opts.chunkRank?.size) {
+    if (!opts.quiet) {
+      console.log(`📋 PROCESS_EDITAL_CHUNKS_ONLY=1 — ${before} → ${out.length} (com chunks em documents)`);
+    }
+  } else if (opts.chunksOnly && !opts.chunkRank?.size && !opts.quiet) {
     console.warn("⚠️ PROCESS_EDITAL_CHUNKS_ONLY=1 mas RPC de chunks indisponível — filtro ignorado.");
   }
   if (opts.weakOnly) {
     const before = out.length;
     out = out.filter((e) => editalNeedsAnyFieldExtraction(e, fields));
-    console.log(`📋 PROCESS_EDITAL_WEAK_ONLY=1 — ${before} → ${out.length} (campos pendentes de extração)`);
+    if (!opts.quiet) {
+      console.log(`📋 PROCESS_EDITAL_WEAK_ONLY=1 — ${before} → ${out.length} (campos pendentes de extração)`);
+    }
   }
   return out;
 }
@@ -1787,6 +1794,66 @@ async function fetchEditaisAllForProcessing(supabase: SupabaseClient): Promise<E
   return out;
 }
 
+/**
+ * Pagina editais até reunir candidatos suficientes — evita carregar a tabela inteira
+ * quando há limite finito e/ou filtros de backlog/chunks/campos pendentes.
+ */
+async function fetchEditaisForProcessBatch(
+  supabase: SupabaseClient,
+  opts: {
+    targetCount: number;
+    backlogOnly: boolean;
+    chunksOnly: boolean;
+    weakOnly: boolean;
+    corretosIds: Set<string>;
+    chunkRank: Map<string, number> | null;
+    fields: FieldKey[];
+  },
+): Promise<{ editais: EditalInfo[]; loadedFromDb: number; partialScan: boolean }> {
+  const pageRaw = parseInt(process.env.PROCESS_EDITAL_FETCH_PAGE_SIZE || "1000", 10);
+  const pageSize = Number.isFinite(pageRaw) && pageRaw > 0 ? Math.min(5000, Math.max(50, pageRaw)) : 1000;
+  const overscan = Math.max(2, parseInt(process.env.PROCESS_EDITAL_FETCH_OVERSCAN || "3", 10) || 3);
+  const goal = Math.max(opts.targetCount * overscan, pageSize);
+  const out: EditalInfo[] = [];
+  let loadedFromDb = 0;
+  let from = 0;
+  let lastBatchFull = false;
+
+  for (;;) {
+    const to = from + pageSize - 1;
+    const { data, error } = await supabase
+      .from("editais")
+      .select(EDITAIS_PROCESS_SELECT)
+      .order("criado_em", { ascending: false })
+      .range(from, to);
+    if (error) throw new Error(`Erro ao buscar editais: ${error.message}`);
+    const batch = (data ?? []) as EditalInfo[];
+    loadedFromDb += batch.length;
+    lastBatchFull = batch.length === pageSize;
+    if (batch.length === 0) break;
+
+    const filtered = filterEditaisForProcessBatch(batch, opts.fields, {
+      backlogOnly: opts.backlogOnly,
+      chunksOnly: opts.chunksOnly,
+      weakOnly: opts.weakOnly,
+      corretosIds: opts.corretosIds,
+      chunkRank: opts.chunkRank,
+      quiet: true,
+    });
+    out.push(...filtered);
+
+    if (batch.length < pageSize) break;
+    if (out.length >= goal) break;
+    from += pageSize;
+  }
+
+  const stoppedEarly = out.length >= goal && lastBatchFull;
+  console.log(
+    `📥 fetch paginado: ${loadedFromDb} linha(s) lidas → ${out.length} candidato(s) (meta≈${goal}${stoppedEarly ? ", parou cedo" : ""})`,
+  );
+  return { editais: out, loadedFromDb, partialScan: stoppedEarly };
+}
+
 function ecsWorkerLoopEnabled(): boolean {
   const v = String(process.env.ECS_WORKER_LOOP || "").trim().toLowerCase();
   return v === "1" || v === "true" || v === "yes";
@@ -2023,7 +2090,7 @@ async function processOneEdital(
   }
 }
 
-export async function runProcessBatch(): Promise<{ hadWork: boolean }> {
+export async function runProcessBatch(): Promise<{ hadWork: boolean; processedIds: string[] }> {
   await initOllamaBaseUrl();
 
   const supabase = createSupabase();
@@ -2060,33 +2127,59 @@ export async function runProcessBatch(): Promise<{ hadWork: boolean }> {
   );
   if (onlyId) console.log(`🎯 PROCESS_EDITAL_ONLY_ID=${onlyId}`);
 
-  let editais = await fetchEditaisAllForProcessing(supabase);
-  const loadedFromDb = editais.length;
   const chunkRows = await fetchEditaisDocumentChunkOrder(supabase);
   const chunkRank = chunkRows && chunkRows.length > 0 ? chunkOrderRankMap(chunkRows) : null;
   if (chunkRows?.length) {
     console.log(`📊 RPC chunks: ${chunkRows.length} editais com documents (content não vazio), ordem decrescente de volume`);
   }
+
+  const usePartialFetch =
+    Number.isFinite(limit) &&
+    (backlogOnly || chunksOnly || weakOnly || onlyId.length > 0);
+
+  let editais: EditalInfo[];
+  let loadedFromDb: number;
+
   if (onlyId) {
+    editais = await fetchEditaisAllForProcessing(supabase);
+    loadedFromDb = editais.length;
     editais = editais.filter((e) => e.id === onlyId);
     console.log(`🎯 filtro only_id → ${editais.length} edital(is) na lista`);
     if (editais.length === 0) {
       console.warn("⚠️ Nenhum edital com esse id na tabela `editais` (verifique o UUID).");
     }
-  } else if (backlogOnly || chunksOnly || weakOnly) {
+  } else if (usePartialFetch) {
     const corretosIds = backlogOnly ? await loadEditalCorretosIdSet(supabase) : new Set<string>();
-    editais = filterEditaisForProcessBatch(editais, fields, {
+    const fetched = await fetchEditaisForProcessBatch(supabase, {
+      targetCount: Number.isFinite(limit) ? limit : 50,
       backlogOnly,
       chunksOnly,
       weakOnly,
       corretosIds,
       chunkRank,
+      fields,
     });
+    editais = fetched.editais;
+    loadedFromDb = fetched.loadedFromDb;
+  } else {
+    editais = await fetchEditaisAllForProcessing(supabase);
+    loadedFromDb = editais.length;
+    if (backlogOnly || chunksOnly || weakOnly) {
+      const corretosIds = backlogOnly ? await loadEditalCorretosIdSet(supabase) : new Set<string>();
+      editais = filterEditaisForProcessBatch(editais, fields, {
+        backlogOnly,
+        chunksOnly,
+        weakOnly,
+        corretosIds,
+        chunkRank,
+      });
+    }
   }
+
   applyProcessEditalOrdering(editais, fields, chunkRank);
   const targets = Number.isFinite(limit) ? editais.slice(0, limit) : editais;
   console.log(
-    `📥 editais carregados=${loadedFromDb}${onlyId ? ` (após only_id: ${editais.length})` : ""}${backlogOnly || chunksOnly || weakOnly ? ` (após filtros: ${editais.length})` : ""} a processar neste lote=${targets.length}`,
+    `📥 editais carregados=${loadedFromDb}${onlyId ? ` (após only_id: ${editais.length})` : ""}${backlogOnly || chunksOnly || weakOnly ? ` (candidatos após filtros: ${editais.length})` : ""} a processar neste lote=${targets.length}`,
   );
 
   let ok = 0;
@@ -2095,7 +2188,7 @@ export async function runProcessBatch(): Promise<{ hadWork: boolean }> {
   let skipSemDocumentos = 0;
   let skipSemUpdateDb = 0;
 
-  const processTargets = async (edital: EditalInfo) => {
+  const processTargets = async (edital: EditalInfo): Promise<{ id: string; status: ProcessOneEditalOutcome["status"] }> => {
     const outcome = await processOneEdital(supabase, edital, fields, fieldConcurrency);
     switch (outcome.status) {
       case "ok":
@@ -2116,37 +2209,45 @@ export async function runProcessBatch(): Promise<{ hadWork: boolean }> {
       default:
         break;
     }
+    return { id: edital.id, status: outcome.status };
   };
+
+  const batchResults: Array<{ id: string; status: ProcessOneEditalOutcome["status"] }> = [];
 
   if (editalConcurrency > 1 && targets.length > 1) {
     const batchDelay = delayBetweenEditaisMs;
     const chunkSize = editalConcurrency;
     for (let start = 0; start < targets.length; start += chunkSize) {
       const chunk = targets.slice(start, start + chunkSize);
-      await Promise.all(chunk.map((edital) => processTargets(edital)));
+      const chunkResults = await Promise.all(chunk.map((edital) => processTargets(edital)));
+      batchResults.push(...chunkResults);
       if (batchDelay > 0 && start + chunkSize < targets.length) {
         await new Promise((r) => setTimeout(r, batchDelay));
       }
     }
   } else {
     for (let i = 0; i < targets.length; i++) {
-      await processTargets(targets[i]!);
+      batchResults.push(await processTargets(targets[i]!));
       if (i < targets.length - 1 && delayBetweenEditaisMs > 0) {
         await new Promise((r) => setTimeout(r, delayBetweenEditaisMs));
       }
     }
   }
 
+  const processedIds = batchResults
+    .filter((r) => r.status === "ok" || r.status === "skip_completo")
+    .map((r) => r.id);
+
   const skipTotal = skipCompleto + skipSemDocumentos + skipSemUpdateDb;
   const accounted = ok + fail + skipTotal;
   console.log(
-    `\n✅ done total_lote=${targets.length} ok=${ok} fail=${fail} skip_completo=${skipCompleto} skip_sem_documentos=${skipSemDocumentos} skip_sem_update_db=${skipSemUpdateDb} (ok+fail+skip=${accounted})`,
+    `\n✅ done total_lote=${targets.length} ok=${ok} fail=${fail} skip_completo=${skipCompleto} skip_sem_documentos=${skipSemDocumentos} skip_sem_update_db=${skipSemUpdateDb} (ok+fail+skip=${accounted}) validate_candidates=${processedIds.length}`,
   );
   if (accounted !== targets.length) {
     console.warn(`⚠️ contagem não bate com total_lote (esperado ${targets.length}, soma ${accounted})`);
   }
   if (fail > 0 && !ecsWorkerLoopEnabled()) process.exitCode = 1;
-  return { hadWork: targets.length > 0 };
+  return { hadWork: targets.length > 0, processedIds };
 }
 
 async function main() {
