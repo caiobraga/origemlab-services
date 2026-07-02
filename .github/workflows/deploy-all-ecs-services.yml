@@ -28,6 +28,10 @@ permissions:
   contents: read
   id-token: write
 
+concurrency:
+  group: deploy-all-ecs-services-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   ollama-service:
     uses: ./.github/workflows/deploy-ollama-service.yml

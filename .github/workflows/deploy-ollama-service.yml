@@ -4,12 +4,8 @@ name: deploy-ollama-service
 on:
   workflow_dispatch: {}
   workflow_call: {}
-  push:
-    branches: [main]
-    paths:
-      - "services/ollama-service/**"
-      - "infrastructure/ecs-ollama-service.yml"
-      - ".github/workflows/deploy-ollama-service.yml"
+  # Push desativado: use deploy-all-ecs-services (inclui paths do Ollama) para evitar
+  # duas execuções simultâneas na mesma concurrency group (workflow_call + push).
 
 permissions:
   id-token: write
@@ -17,7 +13,7 @@ permissions:
 
 concurrency:
   group: ollama-service-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 env:
   AWS_REGION: ${{ vars.AWS_REGION }}
