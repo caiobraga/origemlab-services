@@ -1,14 +1,14 @@
 # edital-pipeline-service
 
+> **Legado** — use [`unified-pipeline-service`](../unified-pipeline-service/README.md).
+
 Um único container ECS (`origemlab-edital-pipeline-worker`) executa em ciclo:
 
-1. **process-edital-info** — extrai campos de até **50** editais (configurável via `PIPELINE_PROCESS_LIMIT`)
-2. **validate-editais-corretos** — valida **somente** os editais processados com sucesso no passo 1
+1. **validate-editais-corretos** — audita campos e grava `editais_corretos`
+2. **process-edital-info** — extrai campos de até **50** editais (configurável via `PIPELINE_PROCESS_LIMIT`)
 3. Volta ao passo 1
 
-Modo legado (`PIPELINE_VALIDATE_BACKLOG=1`): validate do backlog **antes** do process (comportamento antigo).
-
-Substitui dois workers Fargate separados por **um único ECS Service** (default **continuous**, 24/7).
+Substitui dois workers Fargate separados por **um pipeline agendado** (default **`scheduled`** via EventBridge — sem task 24/7).
 
 **Produção:** `OLLAMA_BASE_URL=http://origemlab-ollama-nlb-312422980eebe2d0.elb.us-east-1.amazonaws.com:11434` (GitHub Variables / task env).
 
@@ -27,21 +27,16 @@ Variáveis úteis:
 
 | Variável | Default | Efeito |
 |----------|---------|--------|
-| `PIPELINE_PROCESS_LIMIT` | `50` | Máx. editais processados por iteração |
-| `PIPELINE_VALIDATE_BACKLOG` | off | `1` = validate do backlog **antes** do process (legado) |
-| `PIPELINE_VALIDATE_LIMIT` | `50` | Limite do validate em modo backlog legado |
-| `PIPELINE_PROCESS_FILTERS` | on | `0` desliga filtros automáticos na fase process |
-| `PIPELINE_SKIP_PROCESS` | off | Só validate |
-| `PIPELINE_SKIP_VALIDATE` | off | Só process (sem validate após o lote) |
-| `ECS_WORKER_LOOP` | `1` em continuous | Repete process → validate indefinidamente |
-
-Na fase **process**, o pipeline liga por padrão `PROCESS_EDITAL_BACKLOG_ONLY`, `CHUNKS_ONLY` e `WEAK_ONLY`. Na fase **validate**, usa `VALIDATE_EDITAL_IDS` com os IDs do lote recém-processado.
+| `PIPELINE_PROCESS_LIMIT` | `50` | Máx. editais processados após cada fase validate |
+| `PIPELINE_SKIP_PROCESS` | off | Só validate (equivalente a limite 0) |
+| `PIPELINE_SKIP_VALIDATE` | off | Só process |
+| `ECS_WORKER_LOOP` | `1` em continuous | Repete validate → process indefinidamente |
 
 ## Deploy
 
 `deploy-edital-pipeline-service.yml` → ECR `origemlab-edital-pipeline-service` + `infrastructure/ecs-edital-pipeline-service.yml`.
 
-**Default (AWS):** `OrchestrationMode=continuous` — cluster `origemlab-edital-pipeline` com **1 serviço** (`origemlab-edital-pipeline-worker`), `ECS_WORKER_LOOP=1`, `PIPELINE_PROCESS_LIMIT=50`.
+**Default (AWS):** `OrchestrationMode=scheduled` — cluster sem ECS Service permanente; EventBridge dispara tasks (`rate(1 hour)` por default). Para 24/7: `EDITAL_PIPELINE_ORCHESTRATION_MODE=continuous`.
 
 **Ollama lento / `UND_ERR_HEADERS_TIMEOUT`:** reduzir **tamanho do contexto** e **paralelismo** costuma ajudar mais do que só subir timeout.
 

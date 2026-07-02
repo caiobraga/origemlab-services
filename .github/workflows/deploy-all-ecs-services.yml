@@ -1,5 +1,5 @@
-# Entrypoint AWS: Ollama ECS (NLB) + ingestion-pipeline + edital-pipeline (paralelo).
-# Stacks legados ECS separados: só workflow_dispatch manual.
+# Entrypoint AWS: Ollama ECS (NLB) + unified-pipeline (scraper → document → validate → process).
+# Stacks legados (ingestion/edital separados): só workflow_dispatch manual.
 # SAM/Lambda: deploy.yml
 name: deploy-all-ecs-services
 
@@ -8,20 +8,19 @@ on:
   push:
     branches: [main]
     paths:
+      - "services/unified-pipeline-service/**"
       - "services/ingestion-pipeline-service/**"
       - "services/edital-pipeline-service/**"
       - "services/scraper-runner/**"
       - "services/document-processor/**"
       - "services/process-edital-service/**"
       - "services/validate-edital-service/**"
-      - "infrastructure/ecs-ingestion-pipeline-service.yml"
-      - "infrastructure/ecs-edital-pipeline-service.yml"
+      - "infrastructure/ecs-unified-pipeline-service.yml"
       - "services/ollama-service/**"
       - "infrastructure/ecs-ollama-service.yml"
       - ".github/workflows/deploy-ollama-service.yml"
+      - ".github/workflows/deploy-unified-pipeline-service.yml"
       - ".github/workflows/deploy-all-ecs-services.yml"
-      - ".github/workflows/deploy-ingestion-pipeline-service.yml"
-      - ".github/workflows/deploy-edital-pipeline-service.yml"
       - ".github/scripts/ensure-ecr-repository.sh"
       - ".github/scripts/resolve-al2023-ami.sh"
 
@@ -34,19 +33,14 @@ jobs:
     uses: ./.github/workflows/deploy-ollama-service.yml
     secrets: inherit
 
-  ingestion-pipeline-service:
-    uses: ./.github/workflows/deploy-ingestion-pipeline-service.yml
+  unified-pipeline-service:
+    uses: ./.github/workflows/deploy-unified-pipeline-service.yml
     secrets: inherit
 
-  edital-pipeline-service:
-    uses: ./.github/workflows/deploy-edital-pipeline-service.yml
-    secrets: inherit
-
-  # Legado (deploy manual): deploy-scraper-runner.yml, deploy-document-processor.yml,
-  # deploy-process-edital-service.yml, deploy-validate-edital-service.yml
-  # process-edital-service:
-  #   uses: ./.github/workflows/deploy-process-edital-service.yml
+  # Legado (deploy manual): deploy-ingestion-pipeline-service.yml, deploy-edital-pipeline-service.yml
+  # ingestion-pipeline-service:
+  #   uses: ./.github/workflows/deploy-ingestion-pipeline-service.yml
   #   secrets: inherit
-  # validate-edital-service:
-  #   uses: ./.github/workflows/deploy-validate-edital-service.yml
+  # edital-pipeline-service:
+  #   uses: ./.github/workflows/deploy-edital-pipeline-service.yml
   #   secrets: inherit

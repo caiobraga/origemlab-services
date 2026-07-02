@@ -1,19 +1,8 @@
-# LEGADO — use deploy-unified-pipeline-service.yml. Mantido só para rollback manual.
-# ECS deploy: edital-pipeline (validate-edital primeiro; depois process-edital até N editais).
-#
-# Required repo variables:
-#   EDITAL_PIPELINE_STACK_NAME   optional (default origemlab-edital-pipeline)
-#   VPC_ID, SUBNET_IDS, SECURITY_GROUP_IDS
-#   OLLAMA_BASE_URL
-# Optional:
-#   EDITAL_PIPELINE_SCHEDULE_EXPRESSION (default rate(1 hour))
-#   EDITAL_PIPELINE_CLUSTER_NAME (default origemlab-edital-pipeline)
-#   EDITAL_PIPELINE_ORCHESTRATION_MODE (default continuous; scheduled para só EventBridge)
-#   EVENT_BUS_NAME, OLLAMA_MODEL, PROCESS_EDITAL_*, VALIDATE_*, etc. (mesmas dos stacks antigos)
-name: deploy-edital-pipeline-service
+# ECS deploy: unified-pipeline (scraper → document → validate → process).
+# Substitui ingestion-pipeline + edital-pipeline.
+name: deploy-unified-pipeline-service
 
 on:
-  # Push desativado: use deploy-all-ecs-services (ambas pipelines) ou workflow_dispatch aqui.
   workflow_dispatch: {}
   workflow_call: {}
 
@@ -22,7 +11,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: edital-pipeline-service-${{ github.ref }}
+  group: unified-pipeline-service-${{ github.ref }}
   cancel-in-progress: true
 
 env:
@@ -41,7 +30,7 @@ jobs:
           role-to-assume: ${{ vars.AWS_ROLE_ARN }}
 
       - name: Ensure ECR repository exists
-        run: bash .github/scripts/ensure-ecr-repository.sh origemlab-edital-pipeline-service
+        run: bash .github/scripts/ensure-ecr-repository.sh origemlab-unified-pipeline-service
 
       - name: Login to Amazon ECR
         id: login-ecr
@@ -52,23 +41,23 @@ jobs:
           IMAGE_TAG: ${{ github.sha }}
         run: |
           REGISTRY="${{ steps.login-ecr.outputs.registry }}"
-          IMAGE="${REGISTRY}/origemlab-edital-pipeline-service"
-          docker build -f services/edital-pipeline-service/Dockerfile -t "${IMAGE}:${IMAGE_TAG}" -t "${IMAGE}:latest" .
+          IMAGE="${REGISTRY}/origemlab-unified-pipeline-service"
+          docker build -f services/unified-pipeline-service/Dockerfile -t "${IMAGE}:${IMAGE_TAG}" -t "${IMAGE}:latest" .
           docker push "${IMAGE}:${IMAGE_TAG}"
           docker push "${IMAGE}:latest"
           echo "IMAGE_URI=${IMAGE}:${IMAGE_TAG}" >> "$GITHUB_ENV"
 
       - name: Deploy ECS stack (CloudFormation)
         env:
-          STACK_NAME: ${{ vars.EDITAL_PIPELINE_STACK_NAME }}
+          STACK_NAME: ${{ vars.UNIFIED_PIPELINE_STACK_NAME }}
           VPC_ID: ${{ vars.VPC_ID }}
           SUBNET_IDS: ${{ vars.SUBNET_IDS }}
           SECURITY_GROUP_IDS: ${{ vars.SECURITY_GROUP_IDS }}
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
           OLLAMA_BASE_URL: ${{ vars.OLLAMA_BASE_URL }}
-          SCHEDULE_EXPRESSION: ${{ vars.EDITAL_PIPELINE_SCHEDULE_EXPRESSION }}
-          CLUSTER_NAME: ${{ vars.EDITAL_PIPELINE_CLUSTER_NAME }}
+          SCHEDULE_EXPRESSION: ${{ vars.UNIFIED_PIPELINE_SCHEDULE_EXPRESSION }}
+          CLUSTER_NAME: ${{ vars.UNIFIED_PIPELINE_CLUSTER_NAME }}
           OLLAMA_MODEL: ${{ vars.OLLAMA_MODEL }}
           PROCESS_EDITAL_OLLAMA_MODEL: ${{ vars.PROCESS_EDITAL_OLLAMA_MODEL }}
           OLLAMA_TIMEOUT_MS: ${{ vars.OLLAMA_TIMEOUT_MS }}
@@ -92,16 +81,26 @@ jobs:
           API_REQUEST_DELAY_MS: ${{ vars.VALIDATE_API_REQUEST_DELAY_MS }}
           VALIDATE_EDITAL_CONCURRENCY: ${{ vars.VALIDATE_EDITAL_CONCURRENCY }}
           VALIDATE_FIELD_CONCURRENCY: ${{ vars.VALIDATE_FIELD_CONCURRENCY }}
-          EDITAL_PIPELINE_ORCHESTRATION_MODE: ${{ vars.EDITAL_PIPELINE_ORCHESTRATION_MODE }}
+          UNIFIED_PIPELINE_ORCHESTRATION_MODE: ${{ vars.UNIFIED_PIPELINE_ORCHESTRATION_MODE }}
           WORKER_IDLE_MS_AFTER_WORK: ${{ vars.WORKER_IDLE_MS_AFTER_WORK }}
           WORKER_IDLE_MS_NO_WORK: ${{ vars.WORKER_IDLE_MS_NO_WORK }}
           PIPELINE_PROCESS_LIMIT: ${{ vars.PIPELINE_PROCESS_LIMIT }}
           EVENT_BUS_NAME: ${{ vars.EVENT_BUS_NAME }}
+          OLLAMA_CHAT_MODEL: ${{ vars.OLLAMA_CHAT_MODEL }}
+          OLLAMA_EMBED_MODEL: ${{ vars.OLLAMA_EMBED_MODEL }}
+          NODE_DNS_IPV4FIRST: ${{ vars.NODE_DNS_IPV4FIRST }}
+          SCRAPER_FETCH_RETRIES: ${{ vars.SCRAPER_FETCH_RETRIES }}
+          SCRAPER_FETCH_CONNECT_TIMEOUT_MS: ${{ vars.SCRAPER_FETCH_CONNECT_TIMEOUT_MS }}
+          SCRAPER_FETCH_HEADERS_TIMEOUT_MS: ${{ vars.SCRAPER_FETCH_HEADERS_TIMEOUT_MS }}
+          SCRAPER_FETCH_BODY_TIMEOUT_MS: ${{ vars.SCRAPER_FETCH_BODY_TIMEOUT_MS }}
+          SCRAPER_SOURCE_TIMEOUT_MS: ${{ vars.SCRAPER_SOURCE_TIMEOUT_MS }}
+          UNIFIED_PIPELINE_TASK_CPU: ${{ vars.UNIFIED_PIPELINE_TASK_CPU }}
+          UNIFIED_PIPELINE_TASK_MEMORY: ${{ vars.UNIFIED_PIPELINE_TASK_MEMORY }}
         run: |
           set -euo pipefail
-          STACK_NAME="${STACK_NAME:-origemlab-edital-pipeline}"
+          STACK_NAME="${STACK_NAME:-origemlab-unified-pipeline}"
           STACK_NAME="$(bash .github/scripts/normalize-cloudformation-stack-name.sh "${STACK_NAME}")"
-          echo "CloudFormation stack: ${STACK_NAME} (override: EDITAL_PIPELINE_STACK_NAME)"
+          echo "CloudFormation stack: ${STACK_NAME} (override: UNIFIED_PIPELINE_STACK_NAME)"
           : "${VPC_ID:?Set repo variable VPC_ID}"
           : "${SUBNET_IDS:?Set repo variable SUBNET_IDS}"
           : "${SECURITY_GROUP_IDS:?Set repo variable SECURITY_GROUP_IDS}"
@@ -115,10 +114,12 @@ jobs:
           SG_IDS_CF=$(escape_cf_list "${SECURITY_GROUP_IDS}")
 
           SCHED="${SCHEDULE_EXPRESSION:-rate(1 hour)}"
-          CLUSTER="${CLUSTER_NAME:-origemlab-edital-pipeline}"
-          ORCH="${EDITAL_PIPELINE_ORCHESTRATION_MODE:-scheduled}"
+          CLUSTER="${CLUSTER_NAME:-origemlab-unified-pipeline}"
+          ORCH="${UNIFIED_PIPELINE_ORCHESTRATION_MODE:-scheduled}"
           EB="${EVENT_BUS_NAME:-default}"
-          echo "OrchestrationMode=${ORCH} (scheduled = menor custo; continuous = ECS Service 24/7)"
+          CPU="${UNIFIED_PIPELINE_TASK_CPU:-4096}"
+          MEM="${UNIFIED_PIPELINE_TASK_MEMORY:-8192}"
+          echo "OrchestrationMode=${ORCH} TaskCpu=${CPU} TaskMemory=${MEM}"
 
           bash .github/scripts/cfn-delete-failed-stack.sh "${STACK_NAME}"
 
@@ -134,6 +135,8 @@ jobs:
             "ClusterName=${CLUSTER}"
             "OrchestrationMode=${ORCH}"
             "EventBusName=${EB}"
+            "TaskCpu=${CPU}"
+            "TaskMemory=${MEM}"
           )
 
           _proc_ollama="$(printf '%s' "${PROCESS_EDITAL_OLLAMA_MODEL:-}" | tr -d '\r' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
@@ -141,6 +144,15 @@ jobs:
           _ollama_effective="${_proc_ollama:-${_shared_ollama}}"
           _ollama_effective="${_ollama_effective:-gemma2:2b}"
           OVERRIDES+=("OllamaModel=${_ollama_effective}")
+
+          [ -n "${OLLAMA_CHAT_MODEL:-}" ] && OVERRIDES+=("OllamaChatModel=${OLLAMA_CHAT_MODEL}")
+          [ -n "${OLLAMA_EMBED_MODEL:-}" ] && OVERRIDES+=("OllamaEmbedModel=${OLLAMA_EMBED_MODEL}")
+          [ -n "${NODE_DNS_IPV4FIRST:-}" ] && OVERRIDES+=("NodeDnsIpv4First=${NODE_DNS_IPV4FIRST}")
+          [ -n "${SCRAPER_FETCH_RETRIES:-}" ] && OVERRIDES+=("ScraperFetchRetries=${SCRAPER_FETCH_RETRIES}")
+          [ -n "${SCRAPER_FETCH_CONNECT_TIMEOUT_MS:-}" ] && OVERRIDES+=("ScraperFetchConnectTimeoutMs=${SCRAPER_FETCH_CONNECT_TIMEOUT_MS}")
+          [ -n "${SCRAPER_FETCH_HEADERS_TIMEOUT_MS:-}" ] && OVERRIDES+=("ScraperFetchHeadersTimeoutMs=${SCRAPER_FETCH_HEADERS_TIMEOUT_MS}")
+          [ -n "${SCRAPER_FETCH_BODY_TIMEOUT_MS:-}" ] && OVERRIDES+=("ScraperFetchBodyTimeoutMs=${SCRAPER_FETCH_BODY_TIMEOUT_MS}")
+          [ -n "${SCRAPER_SOURCE_TIMEOUT_MS:-}" ] && OVERRIDES+=("ScraperSourceTimeoutMs=${SCRAPER_SOURCE_TIMEOUT_MS}")
 
           _ctx_chars="$(printf '%s' "${OLLAMA_MAX_CONTEXT_CHARS:-10000}" | tr -d '\r' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
           [[ "${_ctx_chars}" =~ ^[0-9]+$ ]] || _ctx_chars=10000
@@ -204,7 +216,7 @@ jobs:
           OVERRIDES+=("PipelineProcessLimit=${_proc_lim}")
 
           if ! aws cloudformation deploy \
-            --template-file infrastructure/ecs-edital-pipeline-service.yml \
+            --template-file infrastructure/ecs-unified-pipeline-service.yml \
             --stack-name "${STACK_NAME}" \
             --capabilities CAPABILITY_IAM \
             --no-fail-on-empty-changeset \
@@ -215,9 +227,6 @@ jobs:
               --stack-name "${STACK_NAME}" \
               --query 'StackEvents[?ResourceStatus==`CREATE_FAILED` || ResourceStatus==`UPDATE_FAILED` || ResourceStatus==`DELETE_FAILED`].[LogicalResourceId,ResourceStatus,ResourceStatusReason]' \
               --output table 2>/dev/null || true
-            echo ""
-            echo "Dica: modo continuous precisa de ecs:CreateService + iam:PassRole no papel GithubActions (README secao IAM)."
-            echo "Se o stack ficou em ROLLBACK_COMPLETE, o proximo run apaga-o com cfn-delete-failed-stack.sh."
             exit 1
           fi
 
@@ -225,7 +234,7 @@ jobs:
 
       - name: Run pipeline task once (scheduled mode has no ECS Service)
         env:
-          STACK_NAME: ${{ vars.EDITAL_PIPELINE_STACK_NAME }}
+          STACK_NAME: ${{ vars.UNIFIED_PIPELINE_STACK_NAME }}
           SUBNET_IDS: ${{ vars.SUBNET_IDS }}
           SECURITY_GROUP_IDS: ${{ vars.SECURITY_GROUP_IDS }}
           ECS_RUN_TASK_AFTER_DEPLOY: ${{ vars.ECS_RUN_TASK_AFTER_DEPLOY }}
@@ -235,6 +244,6 @@ jobs:
             echo "ECS_RUN_TASK_AFTER_DEPLOY=false — skip run-task."
             exit 0
           fi
-          STACK_NAME="${STACK_NAME:-origemlab-edital-pipeline}"
+          STACK_NAME="${STACK_NAME:-origemlab-unified-pipeline}"
           STACK_NAME="$(bash .github/scripts/normalize-cloudformation-stack-name.sh "${STACK_NAME}")"
           bash .github/scripts/ecs-run-pipeline-task-once.sh "${STACK_NAME}" "${SUBNET_IDS}" "${SECURITY_GROUP_IDS}"

@@ -1,6 +1,6 @@
 /**
- * Pipeline único: process-edital-info (até N editais) → validate-editais-corretos (só os recém-processados).
- * Cada iteração: extrai campos de até PIPELINE_PROCESS_LIMIT editais, depois valida apenas esses IDs.
+ * Pipeline único: validate-editais-corretos → process-edital-info (até N editais) → repete.
+ * Cada iteração: valida o backlog primeiro, depois processa até PIPELINE_PROCESS_LIMIT editais (default 50).
  */
 import "./load-env.js";
 
@@ -26,102 +26,42 @@ function skipValidatePhase(): boolean {
   return String(process.env.PIPELINE_SKIP_VALIDATE || "").trim() === "1";
 }
 
-/** Modo legado: validate do backlog antes do process (desligado por padrão). */
-function validateBacklogFirst(): boolean {
-  return String(process.env.PIPELINE_VALIDATE_BACKLOG || "").trim() === "1";
-}
+const DEFAULT_PIPELINE_PROCESS_LIMIT = 50;
 
-const DEFAULT_PIPELINE_BATCH_LIMIT = 50;
-
-/** Máx. editais na fase process. Default 50; 0 = não processar nesta iteração. */
+/** Máx. editais na fase process após validate. Default 50; 0 = não processar nesta iteração. */
 function pipelineProcessLimit(): number {
   if (String(process.env.PIPELINE_SKIP_PROCESS || "").trim() === "1") return 0;
-  const raw = String(process.env.PIPELINE_PROCESS_LIMIT ?? String(DEFAULT_PIPELINE_BATCH_LIMIT)).trim();
+  const raw = String(process.env.PIPELINE_PROCESS_LIMIT ?? String(DEFAULT_PIPELINE_PROCESS_LIMIT)).trim();
   const n = parseInt(raw, 10);
   return Number.isFinite(n) && n > 0 ? n : 0;
 }
 
-/** Limite do validate em modo backlog (só com PIPELINE_VALIDATE_BACKLOG=1). */
-function pipelineValidateBacklogLimit(): number {
-  const raw = String(process.env.PIPELINE_VALIDATE_LIMIT ?? String(DEFAULT_PIPELINE_BATCH_LIMIT)).trim();
-  const n = parseInt(raw, 10);
-  return Number.isFinite(n) && n >= 0 ? n : DEFAULT_PIPELINE_BATCH_LIMIT;
-}
-
-async function withEnvOverrides<T>(
-  overrides: Record<string, string | undefined>,
-  fn: () => Promise<T>,
-): Promise<T> {
-  const prev: Record<string, string | undefined> = {};
-  for (const [key, value] of Object.entries(overrides)) {
-    prev[key] = process.env[key];
-    if (value === undefined) delete process.env[key];
-    else process.env[key] = value;
-  }
+async function withProcessEditalLimit<T>(limit: number, fn: () => Promise<T>): Promise<T> {
+  const prev = process.env.PROCESS_EDITAL_LIMIT;
+  process.env.PROCESS_EDITAL_LIMIT = String(limit);
   try {
     return await fn();
   } finally {
-    for (const [key, value] of Object.entries(prev)) {
-      if (value === undefined) delete process.env[key];
-      else process.env[key] = value;
-    }
+    if (prev === undefined) delete process.env.PROCESS_EDITAL_LIMIT;
+    else process.env.PROCESS_EDITAL_LIMIT = prev;
   }
 }
 
-async function withValidateEditalIds<T>(ids: string[], fn: () => Promise<T>): Promise<T> {
-  return withEnvOverrides(
-    {
-      VALIDATE_EDITAL_IDS: ids.length > 0 ? ids.join(",") : undefined,
-      VALIDATE_EDITAIS_LIMIT: ids.length > 0 ? String(ids.length) : undefined,
-    },
-    fn,
-  );
-}
-
-async function withValidateBacklogEnv<T>(limit: number, fn: () => Promise<T>): Promise<T> {
-  const overrides: Record<string, string | undefined> = {
-    VALIDATE_EDITAL_IDS: undefined,
-  };
-  if (limit > 0) overrides.VALIDATE_EDITAIS_LIMIT = String(limit);
-  return withEnvOverrides(overrides, fn);
-}
-
-async function withProcessPipelineEnv<T>(limit: number, fn: () => Promise<T>): Promise<T> {
-  const overrides: Record<string, string | undefined> = {
-    PROCESS_EDITAL_LIMIT: String(limit),
-  };
-  if (String(process.env.PIPELINE_PROCESS_FILTERS || "").trim() !== "0") {
-    overrides.PROCESS_EDITAL_BACKLOG_ONLY =
-      process.env.PROCESS_EDITAL_BACKLOG_ONLY ?? "1";
-    overrides.PROCESS_EDITAL_CHUNKS_ONLY =
-      process.env.PROCESS_EDITAL_CHUNKS_ONLY ?? "1";
-    overrides.PROCESS_EDITAL_WEAK_ONLY = process.env.PROCESS_EDITAL_WEAK_ONLY ?? "1";
-  }
-  return withEnvOverrides(overrides, fn);
-}
-
-async function runValidatePhase(
-  processedIds: string[],
-): Promise<{ hadWork: boolean; failed: boolean }> {
+async function runValidatePhase(): Promise<{ hadWork: boolean; failed: boolean }> {
   if (skipValidatePhase()) {
     console.log("⏭️ PIPELINE_SKIP_VALIDATE=1 — fase validate-edital ignorada.");
     return { hadWork: false, failed: false };
   }
 
-  if (processedIds.length === 0) {
-    console.log("\n⏭️ Nenhum edital processado com sucesso neste lote — validate ignorado.");
-    return { hadWork: false, failed: false };
-  }
-
   console.log("\n════════════════════════════════════════");
-  console.log(`  Fase 2/2 — validate-editais-corretos (${processedIds.length} recém-processado(s))`);
+  console.log("  Fase 1/2 — validate-editais-corretos");
   console.log("════════════════════════════════════════\n");
 
   const prevCode = process.exitCode;
   let hadWork = false;
   let failed = false;
   try {
-    const r = await withValidateEditalIds(processedIds, () => runValidateBatch());
+    const r = await runValidateBatch();
     hadWork = r.hadWork;
   } catch (e) {
     failed = true;
@@ -134,54 +74,25 @@ async function runValidatePhase(
   return { hadWork, failed };
 }
 
-async function runValidateBacklogPhase(
-  limit: number,
-): Promise<{ hadWork: boolean; failed: boolean }> {
-  console.log("\n════════════════════════════════════════");
-  console.log(
-    `  Fase 0 — validate backlog (legado, limite=${limit > 0 ? limit : "∞"})`,
-  );
-  console.log("════════════════════════════════════════\n");
-
-  const prevCode = process.exitCode;
-  let hadWork = false;
-  let failed = false;
-  try {
-    const r = await withValidateBacklogEnv(limit, () => runValidateBatch());
-    hadWork = r.hadWork;
-  } catch (e) {
-    failed = true;
-    console.error("❌ Fase validate-backlog falhou:", e);
-  }
-  if (process.exitCode && process.exitCode !== 0) {
-    failed = true;
-    process.exitCode = prevCode ?? 0;
-  }
-  return { hadWork, failed };
-}
-
-async function runProcessPhase(
-  limit: number,
-): Promise<{ hadWork: boolean; failed: boolean; processedIds: string[] }> {
+async function runProcessPhase(limit: number): Promise<{ hadWork: boolean; failed: boolean }> {
   if (limit <= 0) {
     console.log(
       "\n⏭️ PIPELINE_PROCESS_LIMIT=0 — fase process-edital ignorada (0 editais nesta iteração).",
     );
-    return { hadWork: false, failed: false, processedIds: [] };
+    console.log("   Para reativar: PIPELINE_PROCESS_LIMIT=N ou PIPELINE_SKIP_PROCESS=0 + limite > 0.");
+    return { hadWork: false, failed: false };
   }
 
   console.log("\n════════════════════════════════════════");
-  console.log(`  Fase 1/2 — process-edital-info (limite=${limit})`);
+  console.log(`  Fase 2/2 — process-edital-info (limite=${limit})`);
   console.log("════════════════════════════════════════\n");
 
   const prevCode = process.exitCode;
   let hadWork = false;
   let failed = false;
-  let processedIds: string[] = [];
   try {
-    const r = await withProcessPipelineEnv(limit, () => runProcessBatch());
+    const r = await withProcessEditalLimit(limit, () => runProcessBatch());
     hadWork = r.hadWork;
-    processedIds = r.processedIds;
   } catch (e) {
     failed = true;
     console.error("❌ Fase process-edital falhou:", e);
@@ -190,7 +101,7 @@ async function runProcessPhase(
     failed = true;
     process.exitCode = prevCode ?? 0;
   }
-  return { hadWork, failed, processedIds };
+  return { hadWork, failed };
 }
 
 export async function runEditalPipelineOnce(): Promise<{
@@ -198,51 +109,39 @@ export async function runEditalPipelineOnce(): Promise<{
   validateHadWork: boolean;
   processFailed: boolean;
   validateFailed: boolean;
-  processedIds: string[];
 }> {
   const processLimit = pipelineProcessLimit();
-  let validateHadWork = false;
-  let validateFailed = false;
 
-  if (validateBacklogFirst()) {
-    const backlog = await runValidateBacklogPhase(pipelineValidateBacklogLimit());
-    validateHadWork = validateHadWork || backlog.hadWork;
-    validateFailed = validateFailed || backlog.failed;
-  }
-
+  const validate = await runValidatePhase();
   const process = await runProcessPhase(processLimit);
-  const validate = await runValidatePhase(process.processedIds);
-  validateHadWork = validateHadWork || validate.hadWork;
-  validateFailed = validateFailed || validate.failed;
 
   console.log(
-    `\n✅ Pipeline concluído. process_hadWork=${process.hadWork} validate_hadWork=${validateHadWork} process_failed=${process.failed} validate_failed=${validateFailed} process_limit=${processLimit} validated_ids=${process.processedIds.length} backlog_first=${validateBacklogFirst()}`,
+    `\n✅ Pipeline concluído. validate_hadWork=${validate.hadWork} process_hadWork=${process.hadWork} validate_failed=${validate.failed} process_failed=${process.failed} process_limit=${processLimit}`,
   );
 
-  if (validateFailed || process.failed) {
+  if (validate.failed || process.failed) {
     process.exitCode = 1;
   }
 
   return {
     processHadWork: process.hadWork,
-    validateHadWork,
+    validateHadWork: validate.hadWork,
     processFailed: process.failed,
-    validateFailed,
-    processedIds: process.processedIds,
+    validateFailed: validate.failed,
   };
 }
 
 async function main() {
   const processLimit = pipelineProcessLimit();
-  console.log("🔗 edital-pipeline-service (process → validate recém-processados)");
+  console.log("🔗 edital-pipeline-service (validate → process)");
   console.log(
-    `   skip_validate=${skipValidatePhase()} process_limit=${processLimit} backlog_validate_first=${validateBacklogFirst()} process_filters=${String(process.env.PIPELINE_PROCESS_FILTERS || "").trim() !== "0"} worker_loop=${ecsWorkerLoopEnabled()}`,
+    `   skip_validate=${skipValidatePhase()} process_limit=${processLimit} worker_loop=${ecsWorkerLoopEnabled()}`,
   );
 
   if (ecsWorkerLoopEnabled()) {
     let iter = 0;
     console.log(
-      `🔄 ECS_WORKER_LOOP=1 — ciclo: process (até ${processLimit}) → validate (só IDs do lote). Idle após trabalho=${workerIdleMsAfterWork()}ms; fila vazia=${workerIdleMsNoWork()}ms`,
+      `🔄 ECS_WORKER_LOOP=1 — ciclo validate → process. Idle após trabalho=${workerIdleMsAfterWork()}ms; fila vazia=${workerIdleMsNoWork()}ms`,
     );
     while (true) {
       iter += 1;

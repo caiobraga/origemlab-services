@@ -47,6 +47,13 @@ Resources:
       ImageScanningConfiguration:
         ScanOnPush: true
 
+  UnifiedPipelineServiceRepository:
+    Type: AWS::ECR::Repository
+    Properties:
+      RepositoryName: origemlab-unified-pipeline-service
+      ImageScanningConfiguration:
+        ScanOnPush: true
+
 Outputs:
   ScraperRunnerRepositoryUri:
     Value: !GetAtt ScraperRunnerRepository.RepositoryUri
@@ -60,3 +67,5 @@ Outputs:
     Value: !GetAtt EditalPipelineServiceRepository.RepositoryUri
   IngestionPipelineServiceRepositoryUri:
     Value: !GetAtt IngestionPipelineServiceRepository.RepositoryUri
+  UnifiedPipelineServiceRepositoryUri:
+    Value: !GetAtt UnifiedPipelineServiceRepository.RepositoryUri

@@ -36,12 +36,12 @@ Parameters:
     Default: "mxbai-embed-large"
   TaskCpu:
     Type: String
-    Default: "8192"
-    Description: "Fargate vCPU; generate lento em 4096 — recomendado 8192+"
+    Default: "4096"
+    Description: "Fargate vCPU; 4096 costuma bastar para gemma2:2b — suba para 8192 se generate > 90s"
   TaskMemory:
     Type: String
-    Default: "16384"
-    Description: "Fargate RAM MiB; par 8192 CPU → mín. 16384"
+    Default: "8192"
+    Description: "Fargate RAM MiB; par 4096 CPU → mín. 8192; use 16384 com 8192 CPU se OOM"
   OllamaNumParallel:
     Type: Number
     Default: 1

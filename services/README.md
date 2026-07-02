@@ -6,7 +6,10 @@ Cada pasta tem o seu **README** com comandos, variáveis de ambiente e notas de 
 
 | Serviço | Função | Stack / workflow (referência) |
 |--------|--------|-------------------------------|
-| [scraper-runner](./scraper-runner/README.md) | Scrapes por fonte (FINEP, FAPs, etc.) → Supabase + EventBridge | `deploy-scraper-runner.yml`, `infrastructure/ecs-scraper-runner.yml` |
+| [unified-pipeline-service](./unified-pipeline-service/README.md) | **Recomendado:** scrape → PDF → validate → process (1 container) | `deploy-unified-pipeline-service.yml`, `ecs-unified-pipeline-service.yml` |
+| [ingestion-pipeline-service](./ingestion-pipeline-service/README.md) | **Legado:** scrape + PDF | `deploy-ingestion-pipeline-service.yml` (manual) |
+| [edital-pipeline-service](./edital-pipeline-service/README.md) | **Legado:** validate + process | `deploy-edital-pipeline-service.yml` (manual) |
+| [scraper-runner](./scraper-runner/README.md) | Scrapes por fonte (FINEP, FAPs, etc.) → Supabase + EventBridge | `deploy-scraper-runner.yml` (legado) |
 | [document-processor](./document-processor/README.md) | PDF → chunks → enriquecimento (Ollama) → `documents` + embeddings | `deploy-document-processor.yml`, `infrastructure/ecs-document-processor.yml` |
 | [process-edital-service](./process-edital-service/README.md) | Extração de campos dos editais (Ollama) com contexto por chunks | `deploy-process-edital-service.yml`, `infrastructure/ecs-process-edital-service.yml` |
 | [validate-edital-service](./validate-edital-service/README.md) | Validação/auditoria de editais com Ollama | `deploy-validate-edital-service.yml`, `infrastructure/ecs-validate-edital-service.yml` |

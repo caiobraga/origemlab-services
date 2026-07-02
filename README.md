@@ -6,22 +6,26 @@ Serviços (Lambda) consumindo eventos do EventBridge.
 
 ## Deploy ECS (recomendado)
 
-**Um único workflow** dispara as duas pipelines em paralelo:
+**Otimização de custos:** [`docs/COST_OPTIMIZATION.md`](docs/COST_OPTIMIZATION.md)
+
+**Um único workflow** dispara Ollama + pipeline unificado:
 
 | Workflow | O que faz |
 |----------|-----------|
-| **`deploy-all-ecs-services.yml`** | **Ollama ECS (NLB)** + `ingestion-pipeline` + `edital-pipeline` (em paralelo) |
+| **`deploy-all-ecs-services.yml`** | **Ollama ECS (NLB)** + **`unified-pipeline`** (scraper → document → validate → process) |
 
-- **Push em `main`** nos paths das pipelines e código em `services/scraper-runner`, `document-processor`, `process-edital-service`, `validate-edital-service`.
+- **Push em `main`** nos paths de `services/unified-pipeline-service`, workers e `infrastructure/ecs-unified-pipeline-service.yml`.
 - **Manual:** Actions → *deploy-all-ecs-services* → Run workflow.
 
-Os workflows **`deploy-scraper-runner`**, **`deploy-document-processor`**, **`deploy-process-edital-service`** e **`deploy-validate-edital-service`** ficaram só com **`workflow_dispatch`** (stacks ECS legados; não correm em push).
+Os workflows **`deploy-ingestion-pipeline-service`** e **`deploy-edital-pipeline-service`** ficaram **legados** (só `workflow_dispatch`). Use **`unified-pipeline-service`**.
 
-ECR `origemlab-ingestion-pipeline-service` e `origemlab-edital-pipeline-service` são **criados automaticamente** no primeiro deploy se ainda não existirem (papel OIDC precisa de `ecr:CreateRepository`). Alternativa única: `infrastructure/ecr-repositories.yml`.
+Stacks legados ECS separados (`deploy-scraper-runner`, `deploy-document-processor`, etc.) continuam só com **`workflow_dispatch`**.
 
-Variáveis obrigatórias: `VPC_ID`, `SUBNET_IDS`, `SECURITY_GROUP_IDS`, `OLLAMA_BASE_URL`, secrets Supabase. Produção: `OLLAMA_BASE_URL=http://origemlab-ollama-nlb-312422980eebe2d0.elb.us-east-1.amazonaws.com:11434`. Stacks (opcional): `INGESTION_PIPELINE_STACK_NAME` (default `origemlab-ingestion-pipeline`), `EDITAL_PIPELINE_STACK_NAME` (default `origemlab-edital-pipeline`).
+ECR `origemlab-unified-pipeline-service` é **criado automaticamente** no primeiro deploy. Alternativa única: `infrastructure/ecr-repositories.yml`.
 
-**Por que o cluster mostra 0 serviços?** Com `ECS_ORCHESTRATION_MODE=scheduled` (default) **não existe ECS Service** — só **EventBridge Scheduler** (`origemlab-edital-pipeline`, `origemlab-ingestion-pipeline`) que lança **tasks** de hora em hora (ou no intervalo configurado). Entre execuções, **0 tasks** é normal. Opcional após deploy: `ECS_RUN_TASK_AFTER_DEPLOY=true` (requer `ecs:RunTask` no papel GithubActions; senão use o **EventBridge Schedule**). Ver tasks: ECS → cluster → aba **Tasks**; agendamento: **EventBridge → Schedules**.
+Variáveis obrigatórias: `VPC_ID`, `SUBNET_IDS`, `SECURITY_GROUP_IDS`, `OLLAMA_BASE_URL`, secrets Supabase. Stack (opcional): `UNIFIED_PIPELINE_STACK_NAME` (default `origemlab-unified-pipeline`).
+
+**Por que o cluster mostra 0 serviços?** Com `UNIFIED_PIPELINE_ORCHESTRATION_MODE=scheduled` (default) **não existe ECS Service** — só **EventBridge Scheduler** (`origemlab-unified-pipeline`) que lança **tasks** no intervalo configurado (default `rate(1 hour)`). Entre execuções, **0 tasks** é normal.
 
 ## IAM: papel OIDC do GitHub Actions (`AWS_ROLE_ARN`)
 
@@ -88,7 +92,44 @@ Usa as mesmas `VPC_ID` e `SUBNET_IDS` dos pipelines. Stack default: `origemlab-o
 
 EC2 legado: [`services/ollama-server/README.md`](services/ollama-server/README.md) (`deploy-ollama-server.yml`, só manual).
 
-## services/ingestion-pipeline-service (ECS Fargate) — **recomendado (ingestão)**
+## services/unified-pipeline-service (ECS Fargate) — **recomendado**
+
+Um único container executa as **quatro fases** em sequência:
+
+**scraper-runner** → **document-processor** → **validate-editais-corretos** → **process-edital-info**
+
+**Custo:** substitui `ingestion-pipeline` + `edital-pipeline` por **um stack**, **um schedule** e **sem overlap** no Ollama.
+
+### Deploy
+
+**`deploy-all-ecs-services.yml`** (recomendado) ou `deploy-unified-pipeline-service.yml` (só manual). ECR `origemlab-unified-pipeline-service` + `infrastructure/ecs-unified-pipeline-service.yml`.
+
+| Variável | Descrição |
+|----------|-----------|
+| `UNIFIED_PIPELINE_STACK_NAME` | Opcional (default `origemlab-unified-pipeline`) |
+| `VPC_ID`, `SUBNET_IDS`, `SECURITY_GROUP_IDS` | Rede |
+| `OLLAMA_BASE_URL` | Ollama |
+| `UNIFIED_PIPELINE_SCHEDULE_EXPRESSION` | Opcional (default `rate(1 hour)`) |
+| `UNIFIED_PIPELINE_ORCHESTRATION_MODE` | Opcional (default **`scheduled`**) |
+| `UNIFIED_PIPELINE_TASK_CPU` / `MEMORY` | Opcional (default `4096` / `8192`) |
+
+Todas as variáveis de scraper, document-processor, validate e process aplicam-se à mesma task.
+
+### Migrar dos pipelines separados
+
+1. Deploy do `unified-pipeline`.
+2. **Apagar** stacks `origemlab-ingestion-pipeline` e `origemlab-edital-pipeline` na AWS.
+3. Desativar schedules antigos no EventBridge se os stacks não forem apagados.
+
+Local: `cd services/unified-pipeline-service && npm i && npm run start`.
+
+Guia: [`services/unified-pipeline-service/README.md`](services/unified-pipeline-service/README.md).
+
+---
+
+## services/ingestion-pipeline-service (ECS Fargate) — **legado**
+
+Substituído por **`unified-pipeline-service`**. Deploy manual: `deploy-ingestion-pipeline-service.yml`.
 
 Um único container executa em sequência **scraper-runner** → **document-processor** (imagem base Puppeteer + Chromium).
 
@@ -96,7 +137,7 @@ Um único container executa em sequência **scraper-runner** → **document-proc
 
 ### Deploy
 
-**`deploy-all-ecs-services.yml`** (recomendado) ou `deploy-ingestion-pipeline-service.yml` (só manual). ECR `origemlab-ingestion-pipeline-service` + `infrastructure/ecs-ingestion-pipeline-service.yml`.
+`deploy-ingestion-pipeline-service.yml` (só manual). ECR `origemlab-ingestion-pipeline-service` + `infrastructure/ecs-ingestion-pipeline-service.yml`.
 
 | Variável | Descrição |
 |----------|-----------|
@@ -198,15 +239,17 @@ O security group da task precisa conseguir falar com o Ollama (mesma VPC ou rota
 
 Evento ao terminar: `DocumentProcessingCompleted` no EventBridge (`DetailType: DomainEvent`), para encadear notifiers ou métricas.
 
-## services/edital-pipeline-service (ECS Fargate) — **recomendado**
+## services/edital-pipeline-service (ECS Fargate) — **legado**
 
-Um único container executa em sequência **process-edital-info** → **validate-editais-corretos**, substituindo **dois** ECS Services 24/7.
+Substituído por **`unified-pipeline-service`**. Deploy manual: `deploy-edital-pipeline-service.yml`.
+
+Um único container executa em sequência **validate-editais-corretos** → **process-edital-info**, substituindo **dois** ECS Services 24/7.
 
 **Custo:** default `OrchestrationMode=scheduled` — só corre quando o EventBridge dispara (ex. `rate(1 hour)`), sem task Fargate sempre ligada.
 
 ### Deploy
 
-**`deploy-all-ecs-services.yml`** (recomendado) ou `deploy-edital-pipeline-service.yml` (só manual). ECR `origemlab-edital-pipeline-service` + `infrastructure/ecs-edital-pipeline-service.yml`.
+`deploy-edital-pipeline-service.yml` (só manual). ECR `origemlab-edital-pipeline-service` + `infrastructure/ecs-edital-pipeline-service.yml`.
 
 | Variável | Descrição |
 |----------|-----------|
@@ -215,13 +258,13 @@ Um único container executa em sequência **process-edital-info** → **validate
 | Secrets | `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY` |
 | `OLLAMA_BASE_URL` | Ollama |
 | `EDITAL_PIPELINE_SCHEDULE_EXPRESSION` | Só com `scheduled` (default `rate(1 hour)`) |
-| `EDITAL_PIPELINE_ORCHESTRATION_MODE` | Opcional (default **`continuous`**) |
+| `EDITAL_PIPELINE_ORCHESTRATION_MODE` | Opcional (default **`scheduled`** — menor custo; ver [`docs/COST_OPTIMIZATION.md`](docs/COST_OPTIMIZATION.md)) |
 
 Variáveis de process/validate (`PROCESS_EDITAL_*`, `VALIDATE_*`, `OLLAMA_MODEL`, etc.) aplicam-se ao mesmo task definition.
 
 ### Migrar dos stacks antigos
 
-1. Deploy do pipeline com `EDITAL_PIPELINE_STACK_NAME` (default **continuous**).
+1. Deploy do pipeline com `EDITAL_PIPELINE_STACK_NAME` (default **scheduled**).
 2. Nos stacks **process-edital** e **validate-edital** antigos: atualizar com `ECS_ORCHESTRATION_MODE=scheduled` **ou** apagar os ECS Services / stacks para parar cobrança 24/7.
 3. `deploy-all-ecs-services` já só dispara o pipeline (os deploys separados ficam comentados).
 

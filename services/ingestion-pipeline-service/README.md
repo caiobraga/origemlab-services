@@ -1,5 +1,7 @@
 # ingestion-pipeline-service
 
+> **Legado** — use [`unified-pipeline-service`](../unified-pipeline-service/README.md).
+
 Um único container ECS executa em sequência:
 
 1. **scraper-runner** — descobre editais e envia PDFs ao Supabase Storage

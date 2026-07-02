@@ -1,7 +1,7 @@
 AWSTemplateFormatVersion: "2010-09-09"
 Description: >
-  origemlab edital-pipeline on ECS Fargate — validate-editais-corretos primeiro, depois
-  process-edital-info (até N editais). Um container; continuous = loop 24/7.
+  origemlab unified-pipeline — scraper + document-processor + validate + process
+  num único container. Default scheduled (menor custo, sem overlap no Ollama).
 
 Parameters:
   ProjectName:
@@ -12,14 +12,13 @@ Parameters:
     Default: default
   ClusterName:
     Type: String
-    Default: origemlab-edital-pipeline
+    Default: origemlab-unified-pipeline
   ServiceImage:
     Type: String
-    Description: "ECR image URI for edital-pipeline-service"
+    Description: "ECR image URI for unified-pipeline-service"
   ScheduleExpression:
     Type: String
     Default: "rate(1 hour)"
-    Description: "EventBridge Scheduler quando OrchestrationMode=scheduled"
   VpcId:
     Type: AWS::EC2::VPC::Id
   SubnetIds:
@@ -34,12 +33,16 @@ Parameters:
     NoEcho: true
   OllamaBaseUrl:
     Type: String
-  OllamaModel:
+    Default: ""
+  OllamaChatModel:
     Type: String
     Default: "gemma2:2b"
   OllamaEmbedModel:
     Type: String
     Default: "mxbai-embed-large"
+  OllamaModel:
+    Type: String
+    Default: "gemma2:2b"
   OllamaTimeoutMs:
     Type: Number
     Default: 600000
@@ -52,26 +55,39 @@ Parameters:
   OllamaMaxContextChars:
     Type: Number
     Default: 6000
+  NodeDnsIpv4First:
+    Type: String
+    Default: "1"
+  ScraperFetchRetries:
+    Type: String
+    Default: "4"
+  ScraperFetchConnectTimeoutMs:
+    Type: String
+    Default: "60000"
+  ScraperFetchHeadersTimeoutMs:
+    Type: String
+    Default: "120000"
+  ScraperFetchBodyTimeoutMs:
+    Type: String
+    Default: "120000"
+  ScraperSourceTimeoutMs:
+    Type: String
+    Default: "300000"
   ProcessEditalTopK:
     Type: Number
     Default: 40
-    Description: "PROCESS_EDITAL_TOP_K global (timeline usa TOP_K_TIMELINE_ESTIMADA)"
   ProcessEditalTopKTimelineEstimada:
     Type: Number
     Default: 70
-    Description: "Top-k para timeline_estimada (cronograma)"
   ProcessEditalFulldocMaxBatches:
     Type: Number
     Default: 50
-    Description: "Máx. lotes na varredura sequencial; 0 = sem limite"
   ProcessEditalFulldocChunkScan:
     Type: Number
     Default: 1
-    Description: "1 = varredura full-doc; 0 = só top-k + janelas"
   ProcessEditalUseWindows:
     Type: Number
     Default: 1
-    Description: "1 = fallback por janelas após top-k"
   ProcessEditalGenerateDelayMs:
     Type: Number
     Default: 800
@@ -84,7 +100,6 @@ Parameters:
   ProcessEditalConcurrency:
     Type: Number
     Default: 1
-    Description: "1 evita saturar Ollama (segfault com paralelismo alto em CPU)"
   ProcessEditalFieldConcurrency:
     Type: Number
     Default: 1
@@ -106,23 +121,27 @@ Parameters:
   ValidateForceRevalidate:
     Type: Number
     Default: 0
+  PipelineProcessLimit:
+    Type: Number
+    Default: 50
   OrchestrationMode:
     Type: String
     Default: scheduled
     AllowedValues:
       - continuous
       - scheduled
-    Description: "scheduled = só EventBridge (recomendado, menor custo); continuous = 1 ECS Service 24/7"
   WorkerIdleMsAfterWork:
     Type: Number
     Default: 8000
   WorkerIdleMsNoWork:
     Type: Number
     Default: 120000
-  PipelineProcessLimit:
-    Type: Number
-    Default: 50
-    Description: "Máx. editais na fase process após validate; 0 = só validate nesta iteração"
+  TaskCpu:
+    Type: String
+    Default: "4096"
+  TaskMemory:
+    Type: String
+    Default: "8192"
 
 Conditions:
   IsContinuous: !Equals [!Ref OrchestrationMode, continuous]
@@ -137,7 +156,7 @@ Resources:
   LogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
-      LogGroupName: !Sub "/${ProjectName}/edital-pipeline"
+      LogGroupName: !Sub "/${ProjectName}/unified-pipeline"
       RetentionInDays: 14
 
   TaskExecutionRole:
@@ -176,15 +195,15 @@ Resources:
   TaskDefinition:
     Type: AWS::ECS::TaskDefinition
     Properties:
-      Family: !Sub "${ProjectName}-edital-pipeline"
-      Cpu: "2048"
-      Memory: "4096"
+      Family: !Sub "${ProjectName}-unified-pipeline"
+      Cpu: !Ref TaskCpu
+      Memory: !Ref TaskMemory
       NetworkMode: awsvpc
       RequiresCompatibilities: [FARGATE]
       ExecutionRoleArn: !GetAtt TaskExecutionRole.Arn
       TaskRoleArn: !GetAtt TaskRole.Arn
       ContainerDefinitions:
-        - Name: edital-pipeline-service
+        - Name: unified-pipeline-service
           Image: !Ref ServiceImage
           Essential: true
           LogConfiguration:
@@ -196,12 +215,16 @@ Resources:
           Environment:
             - Name: EVENT_BUS_NAME
               Value: !Ref EventBusName
-            - Name: OLLAMA_BASE_URL
-              Value: !Ref OllamaBaseUrl
-            - Name: OLLAMA_MODEL
-              Value: !Ref OllamaModel
+            - Name: SUPABASE_URL
+              Value: !Ref SupabaseUrl
+            - Name: SUPABASE_SERVICE_ROLE_KEY
+              Value: !Ref SupabaseServiceRoleKey
+            - Name: OLLAMA_CHAT_MODEL
+              Value: !Ref OllamaChatModel
             - Name: OLLAMA_EMBED_MODEL
               Value: !Ref OllamaEmbedModel
+            - Name: OLLAMA_MODEL
+              Value: !Ref OllamaModel
             - Name: OLLAMA_TIMEOUT_MS
               Value: !Ref OllamaTimeoutMs
             - Name: OLLAMA_GENERATE_TIMEOUT_MS
@@ -210,6 +233,20 @@ Resources:
               Value: !Ref OllamaEmbedTimeoutMs
             - Name: OLLAMA_MAX_CONTEXT_CHARS
               Value: !Ref OllamaMaxContextChars
+            - Name: NODE_DNS_IPV4FIRST
+              Value: !Ref NodeDnsIpv4First
+            - Name: SCRAPER_FETCH_RETRIES
+              Value: !Ref ScraperFetchRetries
+            - Name: SCRAPER_FETCH_CONNECT_TIMEOUT_MS
+              Value: !Ref ScraperFetchConnectTimeoutMs
+            - Name: SCRAPER_FETCH_HEADERS_TIMEOUT_MS
+              Value: !Ref ScraperFetchHeadersTimeoutMs
+            - Name: SCRAPER_FETCH_BODY_TIMEOUT_MS
+              Value: !Ref ScraperFetchBodyTimeoutMs
+            - Name: SCRAPER_SOURCE_TIMEOUT_MS
+              Value: !Ref ScraperSourceTimeoutMs
+            - Name: SCRAPER_SOURCE
+              Value: "all"
             - Name: PROCESS_EDITAL_TOP_K
               Value: !Ref ProcessEditalTopK
             - Name: PROCESS_EDITAL_TOP_K_TIMELINE_ESTIMADA
@@ -250,10 +287,8 @@ Resources:
               Value: !Sub "${WorkerIdleMsAfterWork}"
             - Name: WORKER_IDLE_MS_NO_WORK
               Value: !Sub "${WorkerIdleMsNoWork}"
-            - Name: SUPABASE_URL
-              Value: !Ref SupabaseUrl
-            - Name: SUPABASE_SERVICE_ROLE_KEY
-              Value: !Ref SupabaseServiceRoleKey
+            - Name: OLLAMA_BASE_URL
+              Value: !Ref OllamaBaseUrl
 
   SchedulerRole:
     Type: AWS::IAM::Role
@@ -286,7 +321,7 @@ Resources:
     Type: AWS::ECS::Service
     DependsOn: TaskDefinition
     Properties:
-      ServiceName: !Sub "${ProjectName}-edital-pipeline-worker"
+      ServiceName: !Sub "${ProjectName}-unified-pipeline-worker"
       Cluster: !Ref Cluster
       TaskDefinition: !Ref TaskDefinition
       DesiredCount: 1
@@ -309,7 +344,7 @@ Resources:
     Condition: IsScheduled
     Type: AWS::Scheduler::Schedule
     Properties:
-      Name: !Sub "${ProjectName}-edital-pipeline"
+      Name: !Sub "${ProjectName}-unified-pipeline"
       State: ENABLED
       FlexibleTimeWindow:
         Mode: "OFF"

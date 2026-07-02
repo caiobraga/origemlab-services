@@ -1,3 +1,4 @@
+# LEGADO — use deploy-unified-pipeline-service.yml. Mantido só para rollback manual.
 # ECS deploy: ingestion-pipeline (scraper-runner + document-processor num único container).
 name: deploy-ingestion-pipeline-service
 
