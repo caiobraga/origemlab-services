@@ -38,6 +38,7 @@ jobs:
     secrets: inherit
 
   unified-pipeline-service:
+    needs: ollama-service
     uses: ./.github/workflows/deploy-unified-pipeline-service.yml
     secrets: inherit
 

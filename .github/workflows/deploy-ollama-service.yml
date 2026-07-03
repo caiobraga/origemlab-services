@@ -141,4 +141,17 @@ jobs:
           echo "OLLAMA_BASE_URL=${OLLAMA_URL}"
           echo "::notice::Defina OLLAMA_BASE_URL=${OLLAMA_URL} no GitHub (backend + services). Verifique CloudWatch /origemlab/ollama-service: pull de gemma2:2b + mxbai-embed-large."
 
+          echo "Aguardando Ollama /api/tags (ate 8 min — pull de modelos no startup)..."
+          for i in $(seq 1 48); do
+            if curl -sf --connect-timeout 10 --max-time 20 "${OLLAMA_URL}/api/tags" >/dev/null 2>&1; then
+              echo "Ollama healthy apos ${i} tentativa(s)"
+              break
+            fi
+            if [ "${i}" -eq 48 ]; then
+              echo "::error::Ollama nao respondeu em ${OLLAMA_URL}/api/tags apos 8 min — verifique ECS task e CloudWatch /origemlab/ollama-service"
+              exit 1
+            fi
+            sleep 10
+          done
+
           bash .github/scripts/ecs-force-rollout-after-cfn.sh "${STACK_NAME}" "continuous"

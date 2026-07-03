@@ -1,5 +1,5 @@
 import { withOllamaSlot } from "../../../../shared/ollamaRequestSlot.ts";
-import { describeFetchError, isOllamaServerCrash } from "./fetchError";
+import { describeFetchError, isOllamaServerCrash, isTransientFetchError } from "./fetchError";
 import { ollamaFetch } from "./ollamaHttp";
 import {
   getResolvedOllamaBaseUrl,
@@ -66,6 +66,13 @@ function getOllamaNumCtx(): number {
   if (Number.isFinite(raw) && raw > 0) return Math.min(16_384, Math.max(1024, raw));
   // 4096 tokens — seguro em Fargate CPU com chat + embed carregados
   return 4096;
+}
+
+async function maybeWaitOllamaAfterTransient(err: unknown, baseUrl: string): Promise<void> {
+  if (isOllamaServerCrash(err) || isTransientFetchError(err)) {
+    console.warn("⚠️ ollama: erro de rede/servidor — aguardando /api/tags...");
+    await waitOllamaHealthy(baseUrl);
+  }
 }
 
 async function waitOllamaHealthy(baseUrl: string, maxWaitMs = 90_000): Promise<void> {
@@ -200,10 +207,7 @@ export async function ollamaGenerate(prompt: string): Promise<string> {
         label: "ollama generate",
         attempts: getOllamaGenerateRetries(),
         onRetry: async (err) => {
-          if (isOllamaServerCrash(err)) {
-            console.warn("⚠️ ollama generate: llama-server crash — aguardando recuperação...");
-            await waitOllamaHealthy(baseUrl);
-          }
+          await maybeWaitOllamaAfterTransient(err, baseUrl);
         },
       }),
     );
@@ -253,10 +257,7 @@ export async function ollamaEmbed(input: string): Promise<number[]> {
       label: "ollama embed",
       attempts: parseInt(process.env.OLLAMA_FETCH_RETRIES || "3", 10) || 3,
       onRetry: async (err) => {
-        if (isOllamaServerCrash(err)) {
-          console.warn("⚠️ ollama embed: llama-server crash — aguardando recuperação...");
-          await waitOllamaHealthy(baseUrl);
-        }
+        await maybeWaitOllamaAfterTransient(err, baseUrl);
       },
     }),
   );
