@@ -4,9 +4,11 @@
 
 Um único container ECS (`origemlab-edital-pipeline-worker`) executa em ciclo:
 
-1. **validate-editais-corretos** — audita campos e grava `editais_corretos`
-2. **process-edital-info** — extrai campos de até **50** editais (configurável via `PIPELINE_PROCESS_LIMIT`)
+1. **process-edital-info** — extrai campos de até **50** editais (configurável via `PIPELINE_PROCESS_LIMIT`)
+2. **validate-editais-corretos** — audita campos e grava `editais_corretos`
 3. Volta ao passo 1
+
+Default: **process → validate** para que editais descobertos no mesmo ciclo unificado possam ser validados na mesma hora. Legado: `PIPELINE_VALIDATE_BEFORE_PROCESS=1`.
 
 Substitui dois workers Fargate separados por **um pipeline agendado** (default **`scheduled`** via EventBridge — sem task 24/7).
 
@@ -27,10 +29,12 @@ Variáveis úteis:
 
 | Variável | Default | Efeito |
 |----------|---------|--------|
-| `PIPELINE_PROCESS_LIMIT` | `50` | Máx. editais processados após cada fase validate |
+| `PIPELINE_PROCESS_LIMIT` | `50` | Máx. editais processados por iteração (antes de validate) |
+| `PIPELINE_VALIDATE_BEFORE_PROCESS` | off | `1` = ordem legada validate → process |
+| `PROCESS_EDITAL_ORDER` | `new_first` | Prioriza editais sem `informacoes_processadas_em` |
 | `PIPELINE_SKIP_PROCESS` | off | Só validate (equivalente a limite 0) |
 | `PIPELINE_SKIP_VALIDATE` | off | Só process |
-| `ECS_WORKER_LOOP` | `1` em continuous | Repete validate → process indefinidamente |
+| `ECS_WORKER_LOOP` | `1` em continuous | Repete process → validate indefinidamente |
 
 ## Deploy
 

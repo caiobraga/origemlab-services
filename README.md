@@ -96,7 +96,7 @@ EC2 legado: [`services/ollama-server/README.md`](services/ollama-server/README.m
 
 Um único container executa as **quatro fases** em sequência:
 
-**scraper-runner** → **document-processor** → **validate-editais-corretos** → **process-edital-info**
+**scraper-runner** → **document-processor** → **process-edital-info** → **validate-editais-corretos**
 
 **Custo:** substitui `ingestion-pipeline` + `edital-pipeline` por **um stack**, **um schedule** e **sem overlap** no Ollama.
 
@@ -243,7 +243,7 @@ Evento ao terminar: `DocumentProcessingCompleted` no EventBridge (`DetailType: D
 
 Substituído por **`unified-pipeline-service`**. Deploy manual: `deploy-edital-pipeline-service.yml`.
 
-Um único container executa em sequência **validate-editais-corretos** → **process-edital-info**, substituindo **dois** ECS Services 24/7.
+Um único container executa em sequência **process-edital-info** → **validate-editais-corretos**, substituindo **dois** ECS Services 24/7.
 
 **Custo:** default `OrchestrationMode=scheduled` — só corre quando o EventBridge dispara (ex. `rate(1 hour)`), sem task Fargate sempre ligada.
 
@@ -293,7 +293,7 @@ Variáveis de repositório necessárias:
 | `PROCESS_EDITAL_SUPABASE_SECRET_ARN` | ARN do secret no Secrets Manager (JSON: `url`, `service_role_key`) |
 | `PROCESS_EDITAL_OLLAMA_BASE_URL` | URL interna do Ollama (`http://...:11434`) |
 
-Opcionais: `ECS_ORCHESTRATION_MODE` (`continuous` \| `scheduled`), `WORKER_IDLE_MS_AFTER_WORK`, `WORKER_IDLE_MS_NO_WORK`, `PROCESS_EDITAL_SCHEDULE_EXPRESSION`, `PROCESS_EDITAL_CLUSTER_NAME`, **`OLLAMA_MODEL`** (modelo no container; usado em todos os serviços que partilham a variável), **`PROCESS_EDITAL_OLLAMA_MODEL`** (se definida, **substitui** `OLLAMA_MODEL` só neste deploy), `PROCESS_EDITAL_OLLAMA_TIMEOUT_MS`, `PROCESS_EDITAL_OLLAMA_MAX_CONTEXT_CHARS`, `PROCESS_EDITAL_LIMIT` (máx. itens por execução do lote), `PROCESS_EDITAL_FETCH_PAGE_SIZE`, `PROCESS_EDITAL_ORDER` (`pending_first` \| `documents_chunks_only` \| `criado_em_desc`), `PROCESS_EDITAL_SKIP_CHUNK_ORDER_RPC`, `PROCESS_EDITAL_TOPK_EMBEDDING` (`perguntas` \| `full`), `PROCESS_EDITAL_ONLY_ID`, `PROCESS_EDITAL_DELAY_BETWEEN_EDITAIS_MS`, **`PROCESS_EDITAL_CONCURRENCY`**, **`PROCESS_EDITAL_FIELD_CONCURRENCY`** (paralelismo por task; defaults 2).
+Opcionais: `ECS_ORCHESTRATION_MODE` (`continuous` \| `scheduled`), `WORKER_IDLE_MS_AFTER_WORK`, `WORKER_IDLE_MS_NO_WORK`, `PROCESS_EDITAL_SCHEDULE_EXPRESSION`, `PROCESS_EDITAL_CLUSTER_NAME`, **`OLLAMA_MODEL`** (modelo no container; usado em todos os serviços que partilham a variável), **`PROCESS_EDITAL_OLLAMA_MODEL`** (se definida, **substitui** `OLLAMA_MODEL` só neste deploy), `PROCESS_EDITAL_OLLAMA_TIMEOUT_MS`, `PROCESS_EDITAL_OLLAMA_MAX_CONTEXT_CHARS`, `PROCESS_EDITAL_LIMIT` (máx. itens por execução do lote), `PROCESS_EDITAL_FETCH_PAGE_SIZE`, `PROCESS_EDITAL_ORDER` (`new_first` \| `pending_first` \| `documents_chunks_only` \| `criado_em_desc`), `PROCESS_EDITAL_SKIP_CHUNK_ORDER_RPC`, `PROCESS_EDITAL_TOPK_EMBEDDING` (`perguntas` \| `full`), `PROCESS_EDITAL_ONLY_ID`, `PROCESS_EDITAL_DELAY_BETWEEN_EDITAIS_MS`, **`PROCESS_EDITAL_CONCURRENCY`**, **`PROCESS_EDITAL_FIELD_CONCURRENCY`** (paralelismo por task; defaults 2).
 
 ## services/validate-edital-service (ECS Fargate) — legado
 

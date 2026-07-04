@@ -1,4 +1,4 @@
-# ECS deploy: unified-pipeline (scraper → document → validate → process).
+# ECS deploy: unified-pipeline (scraper → document → process → validate).
 # Substitui ingestion-pipeline + edital-pipeline.
 name: deploy-unified-pipeline-service
 
@@ -85,6 +85,7 @@ jobs:
           WORKER_IDLE_MS_AFTER_WORK: ${{ vars.WORKER_IDLE_MS_AFTER_WORK }}
           WORKER_IDLE_MS_NO_WORK: ${{ vars.WORKER_IDLE_MS_NO_WORK }}
           PIPELINE_PROCESS_LIMIT: ${{ vars.PIPELINE_PROCESS_LIMIT }}
+          PROCESS_EDITAL_ORDER: ${{ vars.PROCESS_EDITAL_ORDER }}
           EVENT_BUS_NAME: ${{ vars.EVENT_BUS_NAME }}
           OLLAMA_CHAT_MODEL: ${{ vars.OLLAMA_CHAT_MODEL }}
           OLLAMA_EMBED_MODEL: ${{ vars.OLLAMA_EMBED_MODEL }}
@@ -214,6 +215,10 @@ jobs:
           _proc_lim="$(printf '%s' "${PIPELINE_PROCESS_LIMIT:-50}" | tr -d '\r' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
           [[ "${_proc_lim}" =~ ^[0-9]+$ ]] || _proc_lim=50
           OVERRIDES+=("PipelineProcessLimit=${_proc_lim}")
+
+          _proc_order="$(printf '%s' "${PROCESS_EDITAL_ORDER:-new_first}" | tr -d '\r' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+          _proc_order="${_proc_order:-new_first}"
+          OVERRIDES+=("ProcessEditalOrder=${_proc_order}")
 
           if ! aws cloudformation deploy \
             --template-file infrastructure/ecs-unified-pipeline-service.yml \

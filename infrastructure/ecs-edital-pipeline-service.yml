@@ -122,7 +122,16 @@ Parameters:
   PipelineProcessLimit:
     Type: Number
     Default: 50
-    Description: "Máx. editais na fase process após validate; 0 = só validate nesta iteração"
+    Description: "Máx. editais na fase process por iteração; 0 = só validate nesta iteração"
+  ProcessEditalOrder:
+    Type: String
+    Default: new_first
+    AllowedValues:
+      - new_first
+      - pending_first
+      - documents_chunks_only
+      - criado_em_desc
+      - fetch
 
 Conditions:
   IsContinuous: !Equals [!Ref OrchestrationMode, continuous]
@@ -244,6 +253,8 @@ Resources:
               Value: !Ref ValidateForceRevalidate
             - Name: PIPELINE_PROCESS_LIMIT
               Value: !Ref PipelineProcessLimit
+            - Name: PROCESS_EDITAL_ORDER
+              Value: !Ref ProcessEditalOrder
             - Name: ECS_WORKER_LOOP
               Value: !If [IsContinuous, "1", "0"]
             - Name: WORKER_IDLE_MS_AFTER_WORK

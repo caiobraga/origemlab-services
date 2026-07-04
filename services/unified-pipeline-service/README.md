@@ -4,8 +4,10 @@ Um único container ECS executa as **quatro fases** em sequência:
 
 1. **scraper-runner** — busca editais nas fontes
 2. **document-processor** — PDF → chunks → embeddings (Ollama)
-3. **validate-editais-corretos** — auditoria de campos
-4. **process-edital-info** — extração de campos (até `PIPELINE_PROCESS_LIMIT` editais)
+3. **process-edital-info** — extração de campos (até `PIPELINE_PROCESS_LIMIT` editais)
+4. **validate-editais-corretos** — auditoria de campos → `editais_corretos`
+
+Fases 3–4 rodam **process → validate** para que editais descobertos no mesmo ciclo possam aparecer no dashboard na mesma hora.
 
 Substitui `ingestion-pipeline-service` + `edital-pipeline-service` por **um stack**, **um schedule** e **sem overlap** no Ollama.
 
@@ -26,8 +28,10 @@ npm run start
 |----------|--------|
 | `PIPELINE_SKIP_SCRAPER=1` | Pula fase 1 |
 | `PIPELINE_SKIP_DOCUMENT_PROCESSOR=1` | Pula fase 2 |
-| `PIPELINE_SKIP_VALIDATE=1` | Pula fase 3 |
-| `PIPELINE_SKIP_PROCESS=1` | Pula fase 4 |
+| `PIPELINE_SKIP_VALIDATE=1` | Pula fase 4 (validate) |
+| `PIPELINE_SKIP_PROCESS=1` | Pula fase 3 (process) |
+| `PROCESS_EDITAL_ORDER` | `new_first` (default) — prioriza editais novos |
+| `PIPELINE_VALIDATE_BEFORE_PROCESS=1` | Legado: validate antes de process |
 | `ECS_WORKER_LOOP=1` | Loop contínuo (modo `continuous` no ECS) |
 
 ## Deploy

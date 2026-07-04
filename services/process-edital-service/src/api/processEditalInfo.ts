@@ -257,7 +257,8 @@ function chunkOrderRankMap(rows: ChunkOrderRow[]): Map<string, number> {
 const CHUNK_ORDER_RANK_MISS = 1e12;
 
 /**
- * `pending_first` (default): ordem da RPC (mais chunks primeiro), depois campos pendentes, depois `criado_em` desc.
+ * `new_first` (default no unified pipeline): sem `informacoes_processadas_em` primeiro, depois `criado_em` desc.
+ * `pending_first`: ordem da RPC (mais chunks primeiro), depois campos pendentes, depois `criado_em` desc.
  * `documents_chunks_only`: só RPC + `criado_em` para empates / editais fora da RPC.
  * `criado_em_desc` | `fetch`: mantém ordem da query em `fetchEditaisAllForProcessing`.
  */
@@ -266,8 +267,19 @@ function applyProcessEditalOrdering(
   fields: FieldKey[],
   chunkRank: Map<string, number> | null,
 ): void {
-  const mode = String(process.env.PROCESS_EDITAL_ORDER || "pending_first").trim().toLowerCase();
+  const mode = String(process.env.PROCESS_EDITAL_ORDER || "new_first").trim().toLowerCase();
   if (mode === "criado_em_desc" || mode === "fetch") return;
+  if (mode === "new_first") {
+    editais.sort((a, b) => {
+      const pa = (a as EditalInfo).informacoes_processadas_em ? 1 : 0;
+      const pb = (b as EditalInfo).informacoes_processadas_em ? 1 : 0;
+      if (pa !== pb) return pa - pb;
+      const ta = Date.parse(String(a.criado_em || "")) || 0;
+      const tb = Date.parse(String(b.criado_em || "")) || 0;
+      return tb - ta;
+    });
+    return;
+  }
   if (mode === "documents_chunks_only") {
     if (!chunkRank?.size) return;
     editais.sort((a, b) => {
@@ -2123,7 +2135,7 @@ export async function runProcessBatch(): Promise<{ hadWork: boolean; processedId
 
   console.log("🧠 process-edital-service (Ollama-only)");
   console.log(
-    `📦 limit=${Number.isFinite(limit) ? limit : "∞"} editalConcurrency=${editalConcurrency} fieldConcurrency=${fieldConcurrency} delayBetweenEditaisMs=${delayBetweenEditaisMs} order=${String(process.env.PROCESS_EDITAL_ORDER || "pending_first").trim() || "pending_first"} backlogOnly=${backlogOnly} chunksOnly=${chunksOnly} weakOnly=${weakOnly}`,
+    `📦 limit=${Number.isFinite(limit) ? limit : "∞"} editalConcurrency=${editalConcurrency} fieldConcurrency=${fieldConcurrency} delayBetweenEditaisMs=${delayBetweenEditaisMs} order=${String(process.env.PROCESS_EDITAL_ORDER || "new_first").trim() || "new_first"} backlogOnly=${backlogOnly} chunksOnly=${chunksOnly} weakOnly=${weakOnly}`,
   );
   if (onlyId) console.log(`🎯 PROCESS_EDITAL_ONLY_ID=${onlyId}`);
 

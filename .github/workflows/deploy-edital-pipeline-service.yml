@@ -1,5 +1,5 @@
 # LEGADO — use deploy-unified-pipeline-service.yml. Mantido só para rollback manual.
-# ECS deploy: edital-pipeline (validate-edital primeiro; depois process-edital até N editais).
+# ECS deploy: edital-pipeline (process-edital até N editais; depois validate-edital).
 #
 # Required repo variables:
 #   EDITAL_PIPELINE_STACK_NAME   optional (default origemlab-edital-pipeline)
@@ -96,6 +96,7 @@ jobs:
           WORKER_IDLE_MS_AFTER_WORK: ${{ vars.WORKER_IDLE_MS_AFTER_WORK }}
           WORKER_IDLE_MS_NO_WORK: ${{ vars.WORKER_IDLE_MS_NO_WORK }}
           PIPELINE_PROCESS_LIMIT: ${{ vars.PIPELINE_PROCESS_LIMIT }}
+          PROCESS_EDITAL_ORDER: ${{ vars.PROCESS_EDITAL_ORDER }}
           EVENT_BUS_NAME: ${{ vars.EVENT_BUS_NAME }}
         run: |
           set -euo pipefail
@@ -202,6 +203,10 @@ jobs:
           _proc_lim="$(printf '%s' "${PIPELINE_PROCESS_LIMIT:-50}" | tr -d '\r' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
           [[ "${_proc_lim}" =~ ^[0-9]+$ ]] || _proc_lim=50
           OVERRIDES+=("PipelineProcessLimit=${_proc_lim}")
+
+          _proc_order="$(printf '%s' "${PROCESS_EDITAL_ORDER:-new_first}" | tr -d '\r' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+          _proc_order="${_proc_order:-new_first}"
+          OVERRIDES+=("ProcessEditalOrder=${_proc_order}")
 
           if ! aws cloudformation deploy \
             --template-file infrastructure/ecs-edital-pipeline-service.yml \

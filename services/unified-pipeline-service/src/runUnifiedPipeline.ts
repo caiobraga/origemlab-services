@@ -1,5 +1,5 @@
 /**
- * Pipeline unificado: scraper → document-processor → validate-editais → process-edital.
+ * Pipeline unificado: scraper → document-processor → process-edital → validate-editais.
  * Substitui ingestion-pipeline + edital-pipeline num único container ECS agendado.
  */
 import "./load-env.js";
@@ -34,7 +34,7 @@ export async function runUnifiedPipelineOnce(): Promise<{
   const ingestionFailed = ingestion.scraperFailed || ingestion.documentFailed;
 
   console.log("\n╔════════════════════════════════════════╗");
-  console.log("║  Fases 3–4 — edital (validate + process) ║");
+  console.log("║  Fases 3–4 — edital (process + validate) ║");
   console.log("╚════════════════════════════════════════╝\n");
 
   const edital = await runEditalPipelineOnce();
@@ -59,7 +59,7 @@ export async function runUnifiedPipelineOnce(): Promise<{
 async function main() {
   console.log("🔗 unified-pipeline-service");
   console.log(
-    "   scraper → document-processor → validate-editais → process-edital-info",
+    "   scraper → document-processor → process-edital-info → validate-editais-corretos",
   );
   console.log(`   worker_loop=${ecsWorkerLoopEnabled()}`);
 

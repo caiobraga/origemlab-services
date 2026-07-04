@@ -1,4 +1,4 @@
-# Entrypoint AWS: Ollama ECS (NLB) + unified-pipeline (scraper → document → validate → process).
+# Entrypoint AWS: Ollama ECS (NLB) + unified-pipeline (scraper → document → process → validate).
 # Stacks legados (ingestion/edital separados): só workflow_dispatch manual.
 # SAM/Lambda: deploy.yml
 name: deploy-all-ecs-services
