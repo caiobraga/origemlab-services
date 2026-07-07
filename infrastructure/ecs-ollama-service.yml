@@ -34,6 +34,10 @@ Parameters:
   OllamaEmbedModel:
     Type: String
     Default: "mxbai-embed-large"
+  OllamaFastModel:
+    Type: String
+    Default: "qwen2.5:0.5b"
+    Description: "Modelo leve para campos longos (generate-field-text >= 200 palavras)"
   TaskCpu:
     Type: String
     Default: "4096"
@@ -200,6 +204,8 @@ Resources:
               Value: !Ref OllamaChatModel
             - Name: OLLAMA_EMBED_MODEL
               Value: !Ref OllamaEmbedModel
+            - Name: OLLAMA_FAST_MODEL
+              Value: !Ref OllamaFastModel
           LogConfiguration:
             LogDriver: awslogs
             Options:

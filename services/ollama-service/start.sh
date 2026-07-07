@@ -20,6 +20,7 @@ done
 
 CHAT="${OLLAMA_CHAT_MODEL:-gemma2:2b}"
 EMBED="${OLLAMA_EMBED_MODEL:-mxbai-embed-large}"
+FAST="${OLLAMA_FAST_MODEL:-qwen2.5:0.5b}"
 
 # Ollama pull usa nome sem :latest; a API aceita com ou sem tag.
 chat_pull="${CHAT%%:latest}"
@@ -72,5 +73,10 @@ if [ -n "${embed_pull}" ] && [ "${embed_pull}" != "${chat_pull}" ]; then
   pull_required "${embed_pull}" || exit 1
 fi
 
-echo "Ollama ready — chat=${chat_pull} embed=${embed_pull}"
+fast_pull="${FAST%%:latest}"
+if [ -n "${fast_pull}" ] && [ "${fast_pull}" != "${chat_pull}" ] && [ "${fast_pull}" != "${embed_pull}" ]; then
+  pull_required "${fast_pull}" || exit 1
+fi
+
+echo "Ollama ready — chat=${chat_pull} embed=${embed_pull} fast=${fast_pull:-n/a}"
 wait "${OLLAMA_PID}"
