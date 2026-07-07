@@ -3,8 +3,23 @@
 name: deploy-unified-pipeline-service
 
 on:
-  workflow_dispatch: {}
-  workflow_call: {}
+  workflow_dispatch:
+    inputs:
+      orchestration_mode:
+        description: "continuous = ECS Service 24/7; scheduled = só EventBridge"
+        required: false
+        default: continuous
+        type: choice
+        options:
+          - continuous
+          - scheduled
+  workflow_call:
+    inputs:
+      orchestration_mode:
+        description: "continuous | scheduled (override repo var)"
+        required: false
+        type: string
+        default: continuous
 
 permissions:
   id-token: write
@@ -116,7 +131,11 @@ jobs:
 
           SCHED="${SCHEDULE_EXPRESSION:-rate(1 hour)}"
           CLUSTER="${CLUSTER_NAME:-origemlab-unified-pipeline}"
-          ORCH="${UNIFIED_PIPELINE_ORCHESTRATION_MODE:-scheduled}"
+          ORCH="${{ inputs.orchestration_mode }}"
+          if [ -z "${ORCH}" ]; then
+            ORCH="$(printf '%s' "${UNIFIED_PIPELINE_ORCHESTRATION_MODE:-continuous}" | tr -d '\r' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+          fi
+          ORCH="${ORCH:-continuous}"
           EB="${EVENT_BUS_NAME:-default}"
           CPU="${UNIFIED_PIPELINE_TASK_CPU:-4096}"
           MEM="${UNIFIED_PIPELINE_TASK_MEMORY:-8192}"
@@ -245,7 +264,7 @@ jobs:
           ECS_RUN_TASK_AFTER_DEPLOY: ${{ vars.ECS_RUN_TASK_AFTER_DEPLOY }}
         run: |
           set -euo pipefail
-          if [ "${ECS_RUN_TASK_AFTER_DEPLOY:-false}" = "false" ]; then
+          if [ "${ECS_RUN_TASK_AFTER_DEPLOY:-true}" = "false" ]; then
             echo "ECS_RUN_TASK_AFTER_DEPLOY=false — skip run-task."
             exit 0
           fi

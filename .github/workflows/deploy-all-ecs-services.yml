@@ -4,7 +4,16 @@
 name: deploy-all-ecs-services
 
 on:
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      orchestration_mode:
+        description: "continuous = worker 24/7 no ECS; scheduled = só EventBridge"
+        required: false
+        default: continuous
+        type: choice
+        options:
+          - continuous
+          - scheduled
   push:
     branches: [main]
     paths:
@@ -16,6 +25,7 @@ on:
       - "services/process-edital-service/**"
       - "services/validate-edital-service/**"
       - "infrastructure/ecs-unified-pipeline-service.yml"
+      - "scripts/**"
       - "services/ollama-service/**"
       - "infrastructure/ecs-ollama-service.yml"
       - ".github/workflows/deploy-ollama-service.yml"
@@ -41,6 +51,8 @@ jobs:
     needs: ollama-service
     uses: ./.github/workflows/deploy-unified-pipeline-service.yml
     secrets: inherit
+    with:
+      orchestration_mode: ${{ github.event_name == 'workflow_dispatch' && inputs.orchestration_mode || 'continuous' }}
 
   # Legado (deploy manual): deploy-ingestion-pipeline-service.yml, deploy-edital-pipeline-service.yml
   # ingestion-pipeline-service:

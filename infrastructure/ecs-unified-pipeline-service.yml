@@ -1,7 +1,7 @@
 AWSTemplateFormatVersion: "2010-09-09"
 Description: >
   origemlab unified-pipeline — scraper + document-processor + validate + process
-  num único container. Default scheduled (menor custo, sem overlap no Ollama).
+  num único container. Default continuous (ECS Service 24/7 com ECS_WORKER_LOOP).
 
 Parameters:
   ProjectName:
@@ -135,10 +135,22 @@ Parameters:
       - fetch
   OrchestrationMode:
     Type: String
-    Default: scheduled
+    Default: continuous
     AllowedValues:
       - continuous
       - scheduled
+  EnrichChunks:
+    Type: String
+    Default: "0"
+  DocumentProcessorStaleBatch:
+    Type: String
+    Default: "15"
+  DocumentProcessorReverifyProcessed:
+    Type: String
+    Default: "1"
+  DocumentProcessorMinContentChars:
+    Type: String
+    Default: "50"
   WorkerIdleMsAfterWork:
     Type: Number
     Default: 8000
@@ -300,6 +312,18 @@ Resources:
               Value: !Sub "${WorkerIdleMsNoWork}"
             - Name: OLLAMA_BASE_URL
               Value: !Ref OllamaBaseUrl
+            - Name: ENRICH_CHUNKS
+              Value: !Ref EnrichChunks
+            - Name: DOCUMENT_PROCESSOR_STALE_BATCH
+              Value: !Ref DocumentProcessorStaleBatch
+            - Name: DOCUMENT_PROCESSOR_REVERIFY_PROCESSED
+              Value: !Ref DocumentProcessorReverifyProcessed
+            - Name: DOCUMENT_PROCESSOR_MIN_CONTENT_CHARS
+              Value: !Ref DocumentProcessorMinContentChars
+            - Name: PROCESS_EDITAL_BACKLOG_ONLY
+              Value: "1"
+            - Name: VALIDATE_BACKLOG_ONLY
+              Value: "1"
 
   SchedulerRole:
     Type: AWS::IAM::Role
