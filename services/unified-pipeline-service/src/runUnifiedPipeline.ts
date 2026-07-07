@@ -49,7 +49,7 @@ export async function runUnifiedPipelineOnce(): Promise<{
       `validate_hadWork=${edital.validateHadWork} process_hadWork=${edital.processHadWork} failed=${failed}`,
   );
 
-  if (failed) {
+  if (failed && !ecsWorkerLoopEnabled()) {
     process.exitCode = 1;
   }
 
@@ -72,7 +72,9 @@ async function main() {
       iter += 1;
       console.log(`\n🔄 unified iter=${iter} @ ${new Date().toISOString()}`);
       try {
+        process.exitCode = 0;
         const { hadWork } = await runUnifiedPipelineOnce();
+        process.exitCode = 0;
         const idle = hadWork ? workerIdleMsAfterWork() : workerIdleMsNoWork();
         if (idle > 0) await new Promise((r) => setTimeout(r, idle));
       } catch (e) {

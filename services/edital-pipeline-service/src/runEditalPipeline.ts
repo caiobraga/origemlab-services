@@ -4,6 +4,8 @@
  * para que editais descobertos no mesmo ciclo unificado possam ir a editais_corretos
  * sem esperar a próxima hora.
  */
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import "./load-env.js";
 
 import { runProcessBatch } from "../../process-edital-service/src/api/processEditalInfo.js";
@@ -182,7 +184,13 @@ async function main() {
   await runEditalPipelineOnce();
 }
 
-main().catch((e) => {
-  console.error("❌ fatal:", e);
-  process.exitCode = 1;
-});
+const isDirectCliRun =
+  typeof process.argv[1] === "string" &&
+  path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+
+if (isDirectCliRun) {
+  main().catch((e) => {
+    console.error("❌ fatal:", e);
+    process.exitCode = 1;
+  });
+}

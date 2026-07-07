@@ -2,6 +2,8 @@
  * Pipeline único: scraper-runner → document-processor.
  * Substitui scraper agendado + document-processor contínuo por uma task ECS agendada.
  */
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import "./loadEnv.mjs";
 
 import { runScraperBatch } from "../../scraper-runner/src/main.mjs";
@@ -124,7 +126,13 @@ async function main() {
   await runIngestionPipelineOnce();
 }
 
-main().catch((e) => {
-  console.error("❌ fatal:", e);
-  process.exitCode = 1;
-});
+const isDirectCliRun =
+  typeof process.argv[1] === "string" &&
+  path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+
+if (isDirectCliRun) {
+  main().catch((e) => {
+    console.error("❌ fatal:", e);
+    process.exitCode = 1;
+  });
+}
