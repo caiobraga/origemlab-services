@@ -183,12 +183,25 @@ const SOURCES = {
   sigfapes: { component: "scraper.sigfapes", fn: scrapeSigfapesCurrentYear },
 };
 
+/** Fontes lentas (Puppeteer / muitas páginas) — timeout maior que o default. */
+const SLOW_SOURCE_TIMEOUT_MS = {
+  "plataforma-inovacao-industria": 900_000,
+  fapdf: 900_000,
+  fapt: 900_000,
+};
+
+function getSourceTimeoutMs(source) {
+  if (SLOW_SOURCE_TIMEOUT_MS[source] != null) return SLOW_SOURCE_TIMEOUT_MS[source];
+  const env = Number(process.env.SCRAPER_SOURCE_TIMEOUT_MS || "0") || 0;
+  return env > 0 ? env : 300_000;
+}
+
 async function runOne(source) {
   const src = SOURCES[source];
   if (!src) throw new Error(`Unknown source: ${source}`);
   const component = src.component;
   const supabase = getSupabaseFromEnv();
-  const perSourceTimeoutMs = Number(process.env.SCRAPER_SOURCE_TIMEOUT_MS || "0") || 0;
+  const perSourceTimeoutMs = getSourceTimeoutMs(source);
   const editais = await withTimeout(src.fn(), perSourceTimeoutMs, source);
   if (!envFlag("SCRAPER_LOG_QUIET")) summarizeScraped(source, editais);
   // Guarantee fonte is set.

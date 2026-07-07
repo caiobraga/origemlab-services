@@ -4,6 +4,7 @@ import { fetchWithScraperAgent } from "./fetchAgent.mjs";
 import { describeFetchError } from "./httpFetch.mjs";
 import { buildEditalTitulo, isSupplementTitle, isWeakLinkTitle } from "./scraperTitleUtils.mjs";
 import { normalizePdfUrl, resolvePdfFetchUrl } from "./pdfUrlResolve.mjs";
+import { normalizeDateForPostgres } from "./scraperDateUtils.mjs";
 
 const STORAGE_BUCKET = "edital-pdfs";
 
@@ -98,8 +99,10 @@ async function upsertEditalRow(supabase, e) {
   };
   if (e.numero) row.numero = e.numero;
   if (e.descricao) row.descricao = e.descricao;
-  if (e.dataPublicacao) row.data_publicacao = e.dataPublicacao;
-  if (e.dataEncerramento) row.data_encerramento = e.dataEncerramento;
+  const dataPublicacao = normalizeDateForPostgres(e.dataPublicacao);
+  if (dataPublicacao) row.data_publicacao = dataPublicacao;
+  const dataEncerramento = normalizeDateForPostgres(e.dataEncerramento);
+  if (dataEncerramento) row.data_encerramento = dataEncerramento;
   if (e.status) row.status = e.status;
   if (e.valor) row.valor = e.valor;
   if (e.area) row.area = e.area;

@@ -83,6 +83,7 @@ export function scrapeEditaisFromListPage({
         const k = numero || titulo;
         const cur = byKey.get(k);
         if (cur) {
+          if (!Array.isArray(cur.pdfUrls)) cur.pdfUrls = [];
           if (!cur.pdfUrls.includes(abs)) cur.pdfUrls.push(abs);
           cur.titulo = buildEditalTitulo({ linkText: cur.titulo, numero: cur.numero || numero, fonte: source });
         } else {
