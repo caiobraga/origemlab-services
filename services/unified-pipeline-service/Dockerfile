@@ -40,9 +40,12 @@ COPY services/edital-pipeline-service/src ./edital-pipeline-service/src
 COPY services/unified-pipeline-service/src ./pipeline/src
 COPY shared /shared
 
-WORKDIR /app/pipeline
 RUN chown -R pptruser:pptruser /app
 
 USER pptruser
+# npm puppeteer revision must exist in pptruser cache (image ships a different Chrome build).
+RUN cd /app/scraper-runner && npx puppeteer browsers install chrome
+
+WORKDIR /app/pipeline
 
 CMD ["npm", "run", "start"]

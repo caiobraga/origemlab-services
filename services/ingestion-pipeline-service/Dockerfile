@@ -21,9 +21,11 @@ COPY services/scraper-runner/src ./scraper/src
 COPY services/document-processor/src ./document-processor/src
 COPY services/ingestion-pipeline-service/src ./pipeline/src
 
-WORKDIR /app/pipeline
 RUN chown -R pptruser:pptruser /app
 
 USER pptruser
+RUN cd /app/scraper && npx puppeteer browsers install chrome
+
+WORKDIR /app/pipeline
 
 CMD ["npm", "run", "start"]

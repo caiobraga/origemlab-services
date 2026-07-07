@@ -1,11 +1,50 @@
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import puppeteer from "puppeteer";
 
 let browserPromise;
 
+function resolveExecutablePath() {
+  const fromEnv = String(process.env.PUPPETEER_EXECUTABLE_PATH || "").trim();
+  if (fromEnv && fs.existsSync(fromEnv)) return fromEnv;
+
+  try {
+    const fromPuppeteer = puppeteer.executablePath();
+    if (fromPuppeteer && fs.existsSync(fromPuppeteer)) return fromPuppeteer;
+  } catch {
+    // puppeteer may throw when its bundled Chrome revision is missing from cache
+  }
+
+  const cacheRoot = path.join(os.homedir(), ".cache", "puppeteer", "chrome");
+  if (fs.existsSync(cacheRoot)) {
+    const versions = fs
+      .readdirSync(cacheRoot)
+      .filter((dir) => dir.startsWith("linux-"))
+      .sort()
+      .reverse();
+    for (const versionDir of versions) {
+      const candidate = path.join(cacheRoot, versionDir, "chrome-linux64", "chrome");
+      if (fs.existsSync(candidate)) return candidate;
+    }
+  }
+
+  for (const candidate of [
+    "/usr/bin/google-chrome-stable",
+    "/usr/bin/google-chrome",
+    "/usr/bin/chromium",
+    "/usr/bin/chromium-browser",
+  ]) {
+    if (fs.existsSync(candidate)) return candidate;
+  }
+
+  return undefined;
+}
+
 function launchOptions() {
   const args = ["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage"];
-  const executablePath = String(process.env.PUPPETEER_EXECUTABLE_PATH || "").trim() || undefined;
-  return { headless: true, args, executablePath };
+  const executablePath = resolveExecutablePath();
+  return { headless: true, args, ...(executablePath ? { executablePath } : {}) };
 }
 
 async function getBrowser() {

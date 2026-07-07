@@ -2,8 +2,8 @@ FROM ghcr.io/puppeteer/puppeteer:latest
 
 WORKDIR /app
 
-COPY package.json ./
-RUN npm install --omit=dev
+COPY package.json package-lock.json ./
+RUN npm ci --omit=dev && npx puppeteer browsers install chrome
 
 COPY src ./src
 
