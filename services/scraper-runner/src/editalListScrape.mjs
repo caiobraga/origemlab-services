@@ -84,7 +84,8 @@ export function scrapeEditaisFromListPage({
         const cur = byKey.get(k);
         if (cur) {
           if (!Array.isArray(cur.pdfUrls)) cur.pdfUrls = [];
-          if (!cur.pdfUrls.includes(abs)) cur.pdfUrls.push(abs);
+          const resolved = resolvePdfFetchUrl(abs);
+          if (!cur.pdfUrls.includes(resolved)) cur.pdfUrls.push(resolved);
           cur.titulo = buildEditalTitulo({ linkText: cur.titulo, numero: cur.numero || numero, fonte: source });
         } else {
           upsert(k, {
@@ -93,7 +94,7 @@ export function scrapeEditaisFromListPage({
             fonte: source,
             orgao,
             link: listUrl,
-            pdfUrls: [abs],
+            pdfUrls: [resolvePdfFetchUrl(abs)],
             processadoEm: new Date().toISOString(),
           });
         }

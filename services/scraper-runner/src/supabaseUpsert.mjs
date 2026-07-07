@@ -3,7 +3,7 @@ import path from "node:path";
 import { fetchWithScraperAgent } from "./fetchAgent.mjs";
 import { describeFetchError } from "./httpFetch.mjs";
 import { buildEditalTitulo, isSupplementTitle, isWeakLinkTitle } from "./scraperTitleUtils.mjs";
-import { normalizePdfUrl, resolvePdfFetchUrl } from "./pdfUrlResolve.mjs";
+import { normalizePdfUrl, resolvePdfFetchUrl, assertPdfUrlRoutable } from "./pdfUrlResolve.mjs";
 import { normalizeDateForPostgres } from "./scraperDateUtils.mjs";
 
 const STORAGE_BUCKET = "edital-pdfs";
@@ -33,7 +33,7 @@ function sanitizeFileName(name) {
 }
 
 async function fetchPdf(url, timeoutMs = 45000) {
-  const fetchUrl = resolvePdfFetchUrl(url);
+  const fetchUrl = assertPdfUrlRoutable(url);
   const controller = new AbortController();
   const t = setTimeout(() => controller.abort(), timeoutMs);
   try {
@@ -142,6 +142,7 @@ async function upsertEditalRow(supabase, e) {
 
 async function ensurePdf(supabase, editalId, e, pdfUrl) {
   pdfUrl = normalizePdfUrl(pdfUrl);
+  pdfUrl = resolvePdfFetchUrl(pdfUrl);
   const fonte = sanitizePathSegment(e.fonte || "unknown");
   const numero = sanitizePathSegment(e.numero || "unknown");
   const urlPath = new URL(pdfUrl).pathname;
