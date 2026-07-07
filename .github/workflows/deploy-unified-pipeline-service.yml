@@ -136,6 +136,16 @@ jobs:
             ORCH="$(printf '%s' "${UNIFIED_PIPELINE_ORCHESTRATION_MODE:-continuous}" | tr -d '\r' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
           fi
           ORCH="${ORCH:-continuous}"
+          # Some ECS clusters can be left in INACTIVE state if deleted/replaced.
+          # If we try to create an ECS Service against an INACTIVE cluster name, CFN fails.
+          if [ -n "${CLUSTER}" ]; then
+            _cluster_status="$(aws ecs describe-clusters --clusters "${CLUSTER}" --region "${AWS_REGION}" --query 'clusters[0].status' --output text 2>/dev/null || true)"
+            if [ "${_cluster_status}" = "INACTIVE" ]; then
+              _suffix="$(date -u +%Y%m%d%H%M%S)"
+              echo "::warning::ECS cluster '${CLUSTER}' está INACTIVE — usando novo nome '${CLUSTER}-${_suffix}'"
+              CLUSTER="${CLUSTER}-${_suffix}"
+            fi
+          fi
           EB="${EVENT_BUS_NAME:-default}"
           CPU="${UNIFIED_PIPELINE_TASK_CPU:-4096}"
           MEM="${UNIFIED_PIPELINE_TASK_MEMORY:-8192}"
