@@ -149,16 +149,32 @@ async function fetchExistingDocumentsForFile(supabase, fileId) {
   return data || [];
 }
 
-async function countMissingEmbeddings(supabase, fileId) {
+function minIndexedContentChars() {
+  const n = parseInt(process.env.DOCUMENT_PROCESSOR_MIN_CONTENT_CHARS || "50", 10);
+  return Number.isFinite(n) ? Math.max(10, n) : 50;
+}
+
+async function countIndexHealth(supabase, fileId) {
   const fid = String(fileId);
   const { data, error } = await withRetry(
-    () => supabase.from("documents").select("id, embedding, embedding_perguntas").eq("file_id", fid),
-    { label: "check embeddings" },
+    () => supabase.from("documents").select("id, content, embedding, embedding_perguntas").eq("file_id", fid),
+    { label: "check index health" },
   );
   if (error) throw error;
   const rows = data || [];
-  const missing = rows.filter((r) => !r.embedding || (Array.isArray(r.embedding) && r.embedding.length === 0)).length;
-  return { total: rows.length, missing };
+  const minContent = minIndexedContentChars();
+  const withContent = rows.filter((r) => String(r.content || "").trim().length >= minContent).length;
+  const withEmbedding = rows.filter(
+    (r) => r.embedding && (Array.isArray(r.embedding) ? r.embedding.length > 0 : true),
+  ).length;
+  const missing = rows.length - withEmbedding;
+  return { total: rows.length, withContent, withEmbedding, missing };
+}
+
+/** @deprecated use countIndexHealth */
+async function countMissingEmbeddings(supabase, fileId) {
+  const h = await countIndexHealth(supabase, fileId);
+  return { total: h.total, missing: h.missing };
 }
 
 function embedPerguntasColumnEnabled() {
@@ -222,8 +238,8 @@ function pdfFileKey(pdf) {
 }
 
 async function isPdfFullyIndexed(supabase, fileId) {
-  const { total, missing } = await countMissingEmbeddings(supabase, fileId);
-  return total > 0 && missing === 0;
+  const { total, withContent, withEmbedding, missing } = await countIndexHealth(supabase, fileId);
+  return total > 0 && withContent > 0 && withEmbedding === total && missing === 0;
 }
 
 async function markPdfProcessingState(supabase, pdf, processed) {
@@ -291,29 +307,39 @@ async function loadProcessingQueue(supabase, { processAll, limit }) {
   }
 
   let deduped = dedupePdfs(list);
-  if (deduped.length === 0) {
-    const reverify = String(process.env.DOCUMENT_PROCESSOR_REVERIFY_PROCESSED ?? "1").trim() !== "0";
-    if (reverify) {
-      console.log("   🔁 Fila pendente vazia; verificando PDFs marcados como processados sem índice completo...");
+  const reverify = String(process.env.DOCUMENT_PROCESSOR_REVERIFY_PROCESSED ?? "1").trim() !== "0";
+  if (reverify) {
+    const staleBatch = Math.max(
+      0,
+      parseInt(process.env.DOCUMENT_PROCESSOR_STALE_BATCH || (deduped.length === 0 ? "50" : "15"), 10) || 0,
+    );
+    if (staleBatch > 0) {
+      if (deduped.length === 0) {
+        console.log("   🔁 Fila pendente vazia; verificando PDFs marcados como processados sem índice completo...");
+      } else {
+        console.log(`   🔁 Fila pendente=${deduped.length}; incluindo até ${staleBatch} PDF(s) com índice incompleto...`);
+      }
       const { data: marked, error: markErr } = await supabase
         .from("edital_pdfs")
         .select(PDF_SELECT)
         .eq("is_processed", true)
-        .order("edital_id", { ascending: true })
+        .order("edital_id", { ascending: false })
         .limit(5000);
       if (markErr) throw markErr;
 
+      const pendingKeys = new Set(deduped.map((p) => pdfFileKey(p)).filter(Boolean));
       const stale = [];
       const seen = new Set();
       for (const p of marked || []) {
         const fid = pdfFileKey(p);
-        if (!fid || seen.has(fid)) continue;
+        if (!fid || seen.has(fid) || pendingKeys.has(fid)) continue;
         seen.add(fid);
         if (!(await isPdfFullyIndexed(supabase, fid))) stale.push(p);
+        if (stale.length >= staleBatch) break;
       }
       if (stale.length > 0) {
-        console.log(`   📌 Reenfileirados ${stale.length} PDF(s) sem chunks/embeddings completos`);
-        deduped = dedupePdfs(stale);
+        console.log(`   📌 Reenfileirados ${stale.length} PDF(s) sem chunks/conteúdo/embeddings completos`);
+        deduped = dedupePdfs([...deduped, ...stale]);
       }
     }
   }
@@ -695,8 +721,8 @@ export async function runDocumentProcessor(cliArgs = process.argv.slice(2)) {
       return { chunksDelta, okDelta, failDelta };
     }
 
-    const { total, missing } = await countMissingEmbeddings(supabase, fileId);
-    const fullyProcessed = total > 0 && missing === 0;
+    const { total, withContent, missing } = await countIndexHealth(supabase, fileId);
+    const fullyProcessed = total > 0 && withContent > 0 && missing === 0;
     // Se tentamos reparar e ainda falta embedding, limpa para evitar estado parcial persistente.
     if (!fullyProcessed && shouldReuseExisting && total > 0) {
       console.warn(
