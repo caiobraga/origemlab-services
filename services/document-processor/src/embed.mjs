@@ -1,6 +1,7 @@
 import { describeFetchError, isTransientFetchError, isUnreachableNetworkError } from "./fetchError.mjs";
 import { ollamaFetch } from "./ollamaHttp.mjs";
 import { getOllamaBaseUrl, getOllamaEmbedModel } from "./ollamaResolve.mjs";
+import { getAiProvider, openRouterEmbed } from "../../../shared/openrouter.mjs";
 
 function ollamaBaseUrl() {
   return getOllamaBaseUrl();
@@ -17,7 +18,7 @@ function embedFetchRetries() {
 }
 
 function embedDimensions() {
-  return process.env.EMBED_DIMENSIONS ? parseInt(process.env.EMBED_DIMENSIONS, 10) : null;
+  return process.env.EMBED_DIMENSIONS ? parseInt(process.env.EMBED_DIMENSIONS, 10) : 1024;
 }
 
 function embedBatchSize() {
@@ -30,6 +31,25 @@ function embedMaxCharsPerBatch() {
 
 function embedMaxCharsPerInput() {
   return Math.max(100, parseInt(process.env.EMBED_MAX_CHARS_PER_INPUT || "512", 10));
+}
+
+async function embedWithOpenRouter(texts) {
+  if (texts.length === 0) return [];
+  const attempts = embedFetchRetries();
+  let last;
+  for (let i = 0; i < attempts; i++) {
+    try {
+      return await openRouterEmbed(texts);
+    } catch (e) {
+      last = e;
+      const wrapped = e instanceof Error ? e : new Error(String(e));
+      if (i >= attempts - 1 || !isTransientFetchError(wrapped)) throw wrapped;
+      const delay = 1500 * (i + 1);
+      console.warn(`⚠️ openrouter embed: retry ${i + 1}/${attempts} em ${delay}ms — ${wrapped.message}`);
+      await new Promise((r) => setTimeout(r, delay));
+    }
+  }
+  throw last instanceof Error ? last : new Error(String(last));
 }
 
 async function embedWithOllama(texts) {
@@ -118,8 +138,9 @@ export async function embedWithOllamaBatched(texts) {
   const truncated = truncateForEmbed(texts);
   const batches = buildEmbedBatches(truncated);
   const out = [];
+  const embedFn = getAiProvider() === "openrouter" ? embedWithOpenRouter : embedWithOllama;
   for (const batch of batches) {
-    const batchEmbeddings = await embedWithOllama(batch);
+    const batchEmbeddings = await embedFn(batch);
     out.push(...batchEmbeddings);
   }
   return out;

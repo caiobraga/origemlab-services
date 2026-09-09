@@ -35,7 +35,25 @@ Parameters:
     Description: "Supabase service role key (injected at deploy from GitHub Actions secrets)"
   OllamaBaseUrl:
     Type: String
-    Description: "Base URL do Ollama (ex.: http://host:11434)"
+    Description: "Base URL do Ollama (ex.: http://host:11434) — opcional se AI_PROVIDER=openrouter"
+    Default: ""
+  AiProvider:
+    Type: String
+    Default: openrouter
+    AllowedValues: [openrouter, ollama]
+  OpenRouterApiKey:
+    Type: String
+    NoEcho: true
+    Default: ""
+  OpenRouterChatModel:
+    Type: String
+    Default: "qwen/qwen-2.5-7b-instruct"
+  OpenRouterEmbedModel:
+    Type: String
+    Default: "baai/bge-m3"
+  EmbedDimensions:
+    Type: Number
+    Default: 1024
   OllamaModel:
     Type: String
     Default: "gemma2:2b"
@@ -158,6 +176,16 @@ Resources:
           Environment:
             - Name: EVENT_BUS_NAME
               Value: !Ref EventBusName
+            - Name: AI_PROVIDER
+              Value: !Ref AiProvider
+            - Name: OPENROUTER_API_KEY
+              Value: !Ref OpenRouterApiKey
+            - Name: OPENROUTER_CHAT_MODEL
+              Value: !Ref OpenRouterChatModel
+            - Name: OPENROUTER_EMBED_MODEL
+              Value: !Ref OpenRouterEmbedModel
+            - Name: EMBED_DIMENSIONS
+              Value: !Sub "${EmbedDimensions}"
             - Name: OLLAMA_BASE_URL
               Value: !Ref OllamaBaseUrl
             - Name: OLLAMA_MODEL

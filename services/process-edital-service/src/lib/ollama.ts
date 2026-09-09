@@ -1,4 +1,5 @@
 import { withOllamaSlot } from "../../../../shared/ollamaRequestSlot.ts";
+import { getAiProvider, openRouterChat, openRouterEmbedOne } from "../../../../shared/openrouter.ts";
 import { describeFetchError, isOllamaServerCrash, isTransientFetchError } from "./fetchError";
 import { ollamaFetch } from "./ollamaHttp";
 import {
@@ -197,6 +198,23 @@ async function ollamaGenerateOnce(prompt: string, baseUrl: string, model: string
 }
 
 export async function ollamaGenerate(prompt: string): Promise<string> {
+  if (getAiProvider() === "openrouter") {
+    await waitGenerateGap();
+    try {
+      return await withRetry(
+        () =>
+          openRouterChat(prompt, {
+            maxTokens: getOllamaNumPredict(),
+            temperature: parseFloat(process.env.OLLAMA_TEMPERATURE || "0") || 0,
+            timeoutMs: getOllamaGenerateTimeoutMs(),
+          }),
+        { label: "openrouter generate", attempts: getOllamaGenerateRetries() },
+      );
+    } finally {
+      lastGenerateEndMs = Date.now();
+    }
+  }
+
   await waitGenerateGap();
   const baseUrl = getOllamaBaseUrl();
   const model = getOllamaModel();
@@ -249,6 +267,13 @@ async function ollamaEmbedOnce(input: string, baseUrl: string, model: string, ti
 }
 
 export async function ollamaEmbed(input: string): Promise<number[]> {
+  if (getAiProvider() === "openrouter") {
+    return withRetry(() => openRouterEmbedOne(input), {
+      label: "openrouter embed",
+      attempts: parseInt(process.env.OLLAMA_FETCH_RETRIES || "3", 10) || 3,
+    });
+  }
+
   const baseUrl = getOllamaBaseUrl();
   const model = getOllamaEmbedModel();
   const timeoutMs = getOllamaEmbedTimeoutMs();

@@ -22,7 +22,11 @@ import {
   normalizePrazoInscricaoFromText,
   reconcilePrazoInscricaoFromSources,
 } from "../../../../shared/editalPrazoSync.ts";
-import { extractValorLinesForStorage } from "../../../../shared/editalValorExtract.ts";
+import {
+  extractValorLinesForStorage,
+  isPlausibleValorProjetoHeuristic,
+} from "../../../../shared/editalValorExtract.ts";
+import { isValorProjetoAcceptable } from "../lib/valorProjetoValidate.ts";
 
 type FieldEvidence = {
   /** `topk` = similaridade; `chunkscan` = lotes sequenciais do documento; `bulk`/`window` = legado. */
@@ -147,22 +151,50 @@ function isNullishExtractedText(value: unknown): boolean {
   );
 }
 
+/** Alinhado a VALIDATE_MIN_RESUMO_CHARS — resumos curtos devem ser reextraídos. */
+function minExtractedTextChars(): number {
+  const n = parseInt(process.env.PROCESS_EDITAL_MIN_TEXT_CHARS || "50", 10);
+  return Number.isFinite(n) && n > 0 ? n : 50;
+}
+
+const LONG_TEXT_FIELDS = new Set<FieldKey>([
+  "sobre_programa",
+  "criterios_elegibilidade",
+  "localizacao",
+  "vagas",
+  "prazo_inscricao",
+]);
+
+function textFieldIsTooShort(field: FieldKey, value: unknown): boolean {
+  if (!LONG_TEXT_FIELDS.has(field)) return false;
+  if (value == null) return true;
+  const t = String(value).replace(/\s+/g, " ").trim();
+  if (!t || isNullishExtractedText(t)) return true;
+  return t.length < minExtractedTextChars();
+}
+
 /** Indica se o campo ainda deve passar pela extração (null, vazio, "Não informado", timeline vazia, boolean ausente). */
-function fieldNeedsExtraction(field: FieldKey, before: any): boolean {
+function fieldNeedsExtraction(
+  field: FieldKey,
+  before: any,
+  edital?: Pick<EditalInfo, "numero">,
+): boolean {
   if (field === "timeline_estimada" || field === "valor_projeto") {
-    return !extractionValueIsUseful(field, before);
+    const editalNumero = field === "valor_projeto" ? edital?.numero : undefined;
+    return !extractionValueIsUseful(field, before, editalNumero);
   }
   if (field === "is_researcher" || field === "is_company") {
     return typeof before !== "boolean";
   }
   if (fieldType(field) === "string") {
+    if (textFieldIsTooShort(field, before)) return true;
     return !extractionValueIsUseful(field, before);
   }
   return before === null || before === undefined;
 }
 
 function editalNeedsAnyFieldExtraction(edital: EditalInfo, fields: FieldKey[]): boolean {
-  return fields.some((f) => fieldNeedsExtraction(f, (edital as any)[f]));
+  return fields.some((f) => fieldNeedsExtraction(f, (edital as any)[f], edital));
 }
 
 function editalHasAnyUsefulExtractedField(edital: EditalInfo, fields: FieldKey[]): boolean {
@@ -191,8 +223,10 @@ function filterEditaisForProcessBatch(
     backlogOnly: boolean;
     chunksOnly: boolean;
     weakOnly: boolean;
+    requirePdfs: boolean;
     corretosIds: Set<string>;
     chunkRank: Map<string, number> | null;
+    pdfEditalIds: Set<string> | null;
     quiet?: boolean;
   },
 ): EditalInfo[] {
@@ -203,6 +237,15 @@ function filterEditaisForProcessBatch(
     if (!opts.quiet) {
       console.log(`📋 PROCESS_EDITAL_BACKLOG_ONLY=1 — ${before} → ${out.length} (fora de editais_corretos)`);
     }
+  }
+  if (opts.requirePdfs && opts.pdfEditalIds?.size) {
+    const before = out.length;
+    out = out.filter((e) => opts.pdfEditalIds!.has(e.id));
+    if (!opts.quiet) {
+      console.log(`📋 PROCESS_EDITAL_REQUIRE_PDFS=1 — ${before} → ${out.length} (com linha em edital_pdfs)`);
+    }
+  } else if (opts.requirePdfs && !opts.pdfEditalIds?.size && !opts.quiet) {
+    console.warn("⚠️ PROCESS_EDITAL_REQUIRE_PDFS=1 mas nenhum edital_pdfs encontrado — filtro ignorado.");
   }
   if (opts.chunksOnly && opts.chunkRank?.size) {
     const before = out.length;
@@ -221,6 +264,31 @@ function filterEditaisForProcessBatch(
     }
   }
   return out;
+}
+
+/** Cap PDF id scan to avoid burning Workers Free subrequest budget. */
+async function loadEditalIdsWithPdfs(supabase: SupabaseClient): Promise<Set<string>> {
+  const ids = new Set<string>();
+  const pageSize = 500;
+  const maxPages = Math.max(1, parseInt(process.env.PROCESS_EDITAL_PDF_ID_PAGES || "2", 10) || 2);
+  for (let page = 0; page < maxPages; page++) {
+    const from = page * pageSize;
+    const { data, error } = await supabase
+      .from("edital_pdfs")
+      .select("edital_id")
+      .range(from, from + pageSize - 1);
+    if (error) {
+      console.warn(`⚠️ edital_pdfs scan: ${error.message}`);
+      break;
+    }
+    for (const row of data ?? []) {
+      const id = String((row as { edital_id?: string }).edital_id || "").trim();
+      if (id) ids.add(id);
+    }
+    if ((data?.length ?? 0) < pageSize) break;
+  }
+  console.log(`📎 edital_pdfs: ${ids.size} edital_id(s) no scan (≤${maxPages} página(s))`);
+  return ids;
 }
 
 type ChunkOrderRow = { edital_id: string; chunks: number };
@@ -351,6 +419,7 @@ function promptForField(field: FieldKey, edital: Pick<EditalInfo, "numero" | "ti
     ...(field === "valor_projeto"
       ? [
           "- valor_projeto: lista curta em \"valor\" (máx. 6 itens, cada um até ~120 caracteres); só valores/tetos/bolsas com evidência no texto",
+          "- NÃO use número de edital/chamada (ex. \"046/2026\", \"00001946/2026\") como valor_projeto",
           "- Não copie parágrafos inteiros do edital",
         ]
       : []),
@@ -618,12 +687,17 @@ function buildPlainFullText(rows: any[]): string {
   return buildPlainWithSpans(rows).plain;
 }
 
-function extractionValueIsUseful(field: FieldKey, value: any): boolean {
+function extractionValueIsUseful(
+  field: FieldKey,
+  value: any,
+  editalNumero?: string | null,
+): boolean {
   if (value === undefined) return false;
   if (field === "valor_projeto") {
     if (value === null || (typeof value === "string" && isNullishExtractedText(value))) return false;
     const n = normalizeValorProjetoForStorage(value);
-    return Boolean(n && !isNullishExtractedText(n));
+    if (!n || isNullishExtractedText(n)) return false;
+    return isPlausibleValorProjetoHeuristic(n, editalNumero);
   }
   if (field === "timeline_estimada") {
     return timelineValueIsUseful(value);
@@ -1658,6 +1732,12 @@ async function extractFieldValue(
         normalizeValorProjetoForStorage(
           typeof value === "object" && value !== null ? value : typeof value === "string" ? value : null,
         );
+      if (!normalized) return { value: null, rawJson, modelOutput };
+      const acceptable = await isValorProjetoAcceptable(normalized, { editalNumero: edital.numero });
+      if (!acceptable) {
+        console.log(`  valor_projeto rejeitado (não é valor financeiro): ${normalized.slice(0, 160)}`);
+        return { value: null, rawJson, modelOutput };
+      }
       return { value: normalized, rawJson, modelOutput };
     }
     return { value: null, rawJson, modelOutput };
@@ -1817,8 +1897,10 @@ async function fetchEditaisForProcessBatch(
     backlogOnly: boolean;
     chunksOnly: boolean;
     weakOnly: boolean;
+    requirePdfs: boolean;
     corretosIds: Set<string>;
     chunkRank: Map<string, number> | null;
+    pdfEditalIds: Set<string> | null;
     fields: FieldKey[];
   },
 ): Promise<{ editais: EditalInfo[]; loadedFromDb: number; partialScan: boolean }> {
@@ -1848,8 +1930,10 @@ async function fetchEditaisForProcessBatch(
       backlogOnly: opts.backlogOnly,
       chunksOnly: opts.chunksOnly,
       weakOnly: opts.weakOnly,
+      requirePdfs: opts.requirePdfs,
       corretosIds: opts.corretosIds,
       chunkRank: opts.chunkRank,
+      pdfEditalIds: opts.pdfEditalIds,
       quiet: true,
     });
     out.push(...filtered);
@@ -1886,7 +1970,7 @@ type ProcessOneEditalOutcome =
   | { status: "skip_completo" }
   | { status: "skip_sem_documentos" }
   | { status: "skip_sem_update_db" }
-  | { status: "fail" };
+  | { status: "fail"; errorMessage?: string };
 
 function applyPrazoReconcileToPatch(patch: Record<string, any>, edital: EditalInfo): boolean {
   const currentPrazo = patch.prazo_inscricao ?? edital.prazo_inscricao;
@@ -1968,6 +2052,11 @@ async function processOneEdital(
       return { status: "skip_completo" };
     }
 
+    const pendingFields = fields.filter((f) => fieldNeedsExtraction(f, (edital as any)[f], edital));
+    if (pendingFields.length > 0) {
+      console.log(`  ${tag} 🔁 campos pendentes: ${pendingFields.join(", ")}`);
+    }
+
     patch = {};
     evidenceAcc = {};
     prevEvidence =
@@ -1995,7 +2084,7 @@ async function processOneEdital(
       return { status: "skip_sem_documentos" };
     }
 
-    const fieldsToRun = fields.filter((f) => fieldNeedsExtraction(f, (edital as any)[f]));
+    const fieldsToRun = fields.filter((f) => fieldNeedsExtraction(f, (edital as any)[f], edital));
     const runField = async (f: FieldKey) => {
       if (!hasPlain && !hasContextSample && rows.length === 0) {
         console.log(`\n  ${tag} 🧠 campo=${f} — sem texto nem embedding; pulando.`);
@@ -2056,7 +2145,7 @@ async function processOneEdital(
         await notifyProcessSuccess(edital, { campos: ["prazo_inscricao"] });
         return { status: "ok" };
       }
-      const aindaPendente = fields.some((f) => fieldNeedsExtraction(f, (edital as any)[f]));
+      const aindaPendente = fields.some((f) => fieldNeedsExtraction(f, (edital as any)[f], edital));
       console.log(
         `  ${tag} ⏭️ pulando update: ${
           aindaPendente
@@ -2093,12 +2182,12 @@ async function processOneEdital(
           persistErr instanceof Error ? persistErr.message : String(persistErr),
         );
         await notifyProcessFailure(edital, e, { gravacaoParcialFallhou: persistErr, campos: fieldKeys });
-        return { status: "fail" };
+        return { status: "fail", errorMessage: e instanceof Error ? e.message : String(e) };
       }
     }
     console.error(`  ${tag} ❌ erro:`, e instanceof Error ? e.message : String(e));
     await notifyProcessFailure(edital, e);
-    return { status: "fail" };
+    return { status: "fail", errorMessage: e instanceof Error ? e.message : String(e) };
   }
 }
 
@@ -2120,6 +2209,7 @@ export async function runProcessBatch(): Promise<{ hadWork: boolean; processedId
   const backlogOnly = String(process.env.PROCESS_EDITAL_BACKLOG_ONLY || "").trim() === "1";
   const chunksOnly = String(process.env.PROCESS_EDITAL_CHUNKS_ONLY || "").trim() === "1";
   const weakOnly = String(process.env.PROCESS_EDITAL_WEAK_ONLY || "").trim() === "1";
+  const requirePdfs = String(process.env.PROCESS_EDITAL_REQUIRE_PDFS || "").trim() === "1";
 
   const fields: FieldKey[] = [
     "valor_projeto",
@@ -2133,9 +2223,9 @@ export async function runProcessBatch(): Promise<{ hadWork: boolean; processedId
     "timeline_estimada",
   ];
 
-  console.log("🧠 process-edital-service (Ollama-only)");
+  console.log("🧠 process-edital-service");
   console.log(
-    `📦 limit=${Number.isFinite(limit) ? limit : "∞"} editalConcurrency=${editalConcurrency} fieldConcurrency=${fieldConcurrency} delayBetweenEditaisMs=${delayBetweenEditaisMs} order=${String(process.env.PROCESS_EDITAL_ORDER || "new_first").trim() || "new_first"} backlogOnly=${backlogOnly} chunksOnly=${chunksOnly} weakOnly=${weakOnly}`,
+    `📦 limit=${Number.isFinite(limit) ? limit : "∞"} editalConcurrency=${editalConcurrency} fieldConcurrency=${fieldConcurrency} delayBetweenEditaisMs=${delayBetweenEditaisMs} order=${String(process.env.PROCESS_EDITAL_ORDER || "new_first").trim() || "new_first"} backlogOnly=${backlogOnly} chunksOnly=${chunksOnly} weakOnly=${weakOnly} requirePdfs=${requirePdfs}`,
   );
   if (onlyId) console.log(`🎯 PROCESS_EDITAL_ONLY_ID=${onlyId}`);
 
@@ -2145,9 +2235,11 @@ export async function runProcessBatch(): Promise<{ hadWork: boolean; processedId
     console.log(`📊 RPC chunks: ${chunkRows.length} editais com documents (content não vazio), ordem decrescente de volume`);
   }
 
+  const pdfEditalIds = requirePdfs ? await loadEditalIdsWithPdfs(supabase) : null;
+
   const usePartialFetch =
     Number.isFinite(limit) &&
-    (backlogOnly || chunksOnly || weakOnly || onlyId.length > 0);
+    (backlogOnly || chunksOnly || weakOnly || requirePdfs || onlyId.length > 0);
 
   let editais: EditalInfo[];
   let loadedFromDb: number;
@@ -2167,8 +2259,10 @@ export async function runProcessBatch(): Promise<{ hadWork: boolean; processedId
       backlogOnly,
       chunksOnly,
       weakOnly,
+      requirePdfs,
       corretosIds,
       chunkRank,
+      pdfEditalIds,
       fields,
     });
     editais = fetched.editais;
@@ -2176,14 +2270,16 @@ export async function runProcessBatch(): Promise<{ hadWork: boolean; processedId
   } else {
     editais = await fetchEditaisAllForProcessing(supabase);
     loadedFromDb = editais.length;
-    if (backlogOnly || chunksOnly || weakOnly) {
+    if (backlogOnly || chunksOnly || weakOnly || requirePdfs) {
       const corretosIds = backlogOnly ? await loadEditalCorretosIdSet(supabase) : new Set<string>();
       editais = filterEditaisForProcessBatch(editais, fields, {
         backlogOnly,
         chunksOnly,
         weakOnly,
+        requirePdfs,
         corretosIds,
         chunkRank,
+        pdfEditalIds,
       });
     }
   }
@@ -2200,7 +2296,9 @@ export async function runProcessBatch(): Promise<{ hadWork: boolean; processedId
   let skipSemDocumentos = 0;
   let skipSemUpdateDb = 0;
 
-  const processTargets = async (edital: EditalInfo): Promise<{ id: string; status: ProcessOneEditalOutcome["status"] }> => {
+  const processTargets = async (
+    edital: EditalInfo,
+  ): Promise<{ id: string; status: ProcessOneEditalOutcome["status"]; errorMessage?: string }> => {
     const outcome = await processOneEdital(supabase, edital, fields, fieldConcurrency);
     switch (outcome.status) {
       case "ok":
@@ -2221,25 +2319,45 @@ export async function runProcessBatch(): Promise<{ hadWork: boolean; processedId
       default:
         break;
     }
-    return { id: edital.id, status: outcome.status };
+    return {
+      id: edital.id,
+      status: outcome.status,
+      errorMessage: outcome.status === "fail" ? outcome.errorMessage : undefined,
+    };
   };
+
+  const isWorkerSubrequestLimit = (msg?: string) => Boolean(msg && /Too many subrequests/i.test(msg));
 
   const batchResults: Array<{ id: string; status: ProcessOneEditalOutcome["status"] }> = [];
 
   if (editalConcurrency > 1 && targets.length > 1) {
+    // On Cloudflare Workers, prefer sequential — concurrency burns subrequest budget faster.
     const batchDelay = delayBetweenEditaisMs;
     const chunkSize = editalConcurrency;
-    for (let start = 0; start < targets.length; start += chunkSize) {
+    outer: for (let start = 0; start < targets.length; start += chunkSize) {
       const chunk = targets.slice(start, start + chunkSize);
       const chunkResults = await Promise.all(chunk.map((edital) => processTargets(edital)));
       batchResults.push(...chunkResults);
+      if (chunkResults.some((r) => isWorkerSubrequestLimit(r.errorMessage))) {
+        console.warn(
+          `⚠️ Workers subrequest limit hit — stopping process batch early (${batchResults.length}/${targets.length})`,
+        );
+        break outer;
+      }
       if (batchDelay > 0 && start + chunkSize < targets.length) {
         await new Promise((r) => setTimeout(r, batchDelay));
       }
     }
   } else {
     for (let i = 0; i < targets.length; i++) {
-      batchResults.push(await processTargets(targets[i]!));
+      const result = await processTargets(targets[i]!);
+      batchResults.push(result);
+      if (isWorkerSubrequestLimit(result.errorMessage)) {
+        console.warn(
+          `⚠️ Workers subrequest limit hit — stopping process batch early (${i + 1}/${targets.length})`,
+        );
+        break;
+      }
       if (i < targets.length - 1 && delayBetweenEditaisMs > 0) {
         await new Promise((r) => setTimeout(r, delayBetweenEditaisMs));
       }

@@ -71,6 +71,11 @@ jobs:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
           OLLAMA_BASE_URL: ${{ vars.OLLAMA_BASE_URL }}
+          AI_PROVIDER: ${{ vars.AI_PROVIDER }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          OPENROUTER_CHAT_MODEL: ${{ vars.OPENROUTER_CHAT_MODEL }}
+          OPENROUTER_EMBED_MODEL: ${{ vars.OPENROUTER_EMBED_MODEL }}
+          EMBED_DIMENSIONS: ${{ vars.EMBED_DIMENSIONS }}
           SCHEDULE_EXPRESSION: ${{ vars.UNIFIED_PIPELINE_SCHEDULE_EXPRESSION }}
           CLUSTER_NAME: ${{ vars.UNIFIED_PIPELINE_CLUSTER_NAME }}
           OLLAMA_MODEL: ${{ vars.OLLAMA_MODEL }}
@@ -122,7 +127,6 @@ jobs:
           : "${SECURITY_GROUP_IDS:?Set repo variable SECURITY_GROUP_IDS}"
           : "${SUPABASE_URL:?Set repo secret SUPABASE_URL}"
           : "${SUPABASE_SERVICE_ROLE_KEY:?Set repo secret SUPABASE_SERVICE_ROLE_KEY}"
-          : "${OLLAMA_BASE_URL:?Set repo variable OLLAMA_BASE_URL}"
           : "${IMAGE_URI:?IMAGE_URI missing}"
 
           escape_cf_list() { printf '%s' "$1" | sed 's/,/\\,/g'; }
@@ -160,7 +164,6 @@ jobs:
             "SecurityGroupIds=${SG_IDS_CF}"
             "SupabaseUrl=${SUPABASE_URL}"
             "SupabaseServiceRoleKey=${SUPABASE_SERVICE_ROLE_KEY}"
-            "OllamaBaseUrl=${OLLAMA_BASE_URL}"
             "ScheduleExpression=${SCHED}"
             "ClusterName=${CLUSTER}"
             "OrchestrationMode=${ORCH}"
@@ -168,6 +171,9 @@ jobs:
             "TaskCpu=${CPU}"
             "TaskMemory=${MEM}"
           )
+
+          # shellcheck source=../scripts/append-openrouter-cfn.sh
+          source .github/scripts/append-openrouter-cfn.sh
 
           _proc_ollama="$(printf '%s' "${PROCESS_EDITAL_OLLAMA_MODEL:-}" | tr -d '\r' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
           _shared_ollama="$(printf '%s' "${OLLAMA_MODEL:-}" | tr -d '\r' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"

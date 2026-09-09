@@ -66,13 +66,31 @@ export function collectEditalTextForActiveDateSearch(input: EditalActiveSearchIn
   return parts.join(" ").toLowerCase();
 }
 
+/** Evita que "9/2026" case dentro de "39/2026" (número do edital). */
+export function textHasActiveDatePattern(text: string, pattern: string): boolean {
+  const hay = String(text || "").toLowerCase();
+  const needle = String(pattern || "").toLowerCase().trim();
+  if (!hay || !needle) return false;
+
+  // Ano isolado (2027): só conta como token, não como substring de outro número.
+  if (/^\d{4}$/.test(needle)) {
+    return new RegExp(`(?<!\\d)${needle}(?!\\d)`).test(hay);
+  }
+
+  // MM/AAAA ou M/AAAA: não pode ter dígito imediatamente antes (bloqueia 39/2026 ⊃ 9/2026).
+  const escaped = needle.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`(?<!\\d)${escaped}(?!\\d)`).test(hay);
+}
+
 export function editalMatchesActiveDateSearchPatterns(
   input: EditalActiveSearchInput,
   referenceDate = new Date(),
 ): boolean {
   const text = collectEditalTextForActiveDateSearch(input);
   if (!text) return false;
-  return buildActiveEditalDateSearchPatterns(referenceDate).some((pattern) => text.includes(pattern.toLowerCase()));
+  return buildActiveEditalDateSearchPatterns(referenceDate).some((pattern) =>
+    textHasActiveDatePattern(text, pattern),
+  );
 }
 
 function parseDateLoose(raw: unknown): Date | null {
@@ -156,6 +174,28 @@ export function collectEditalDatesForActiveWindow(input: EditalActiveSearchInput
   return dates;
 }
 
+function startOfDayLocal(d: Date): Date {
+  const x = new Date(d);
+  x.setHours(0, 0, 0, 0);
+  return x;
+}
+
+/**
+ * Datas estruturadas de prazo/encerramento (sem título/descrição).
+ * Se a mais recente já passou, o edital não deve permanecer "ativo" só por
+ * texto solto (ex.: número "39/2026" ou fase futura de homologação).
+ */
+export function collectStructuredPrazoEncerramentoDates(input: EditalActiveSearchInput): Date[] {
+  const dates: Date[] = [];
+  const prazoText = input.prazo_inscricao != null ? String(input.prazo_inscricao) : "";
+  if (prazoText && prazoText.toLowerCase() !== "não informado" && prazoText.toLowerCase() !== "nao informado") {
+    pushDatesFromText(prazoText, dates);
+  }
+  const enc = parseDateLoose(input.data_encerramento);
+  if (enc) dates.push(enc);
+  return dates;
+}
+
 export function isEditalAtivoByDatePatterns(
   input: EditalActiveSearchInput,
   referenceDate = new Date(),
@@ -164,6 +204,16 @@ export function isEditalAtivoByDatePatterns(
     .toLowerCase()
     .trim();
   if (status === "encerrado" || status === "finalizado") return false;
+
+  const structured = collectStructuredPrazoEncerramentoDates(input);
+  if (structured.length > 0) {
+    const latest = new Date(Math.max(...structured.map((d) => d.getTime())));
+    // Prazo/encerramento conhecido no passado → encerrado (heurística de texto não reabre).
+    if (startOfDayLocal(latest).getTime() < startOfDayLocal(referenceDate).getTime()) {
+      return false;
+    }
+    return true;
+  }
 
   if (editalMatchesActiveDateSearchPatterns(input, referenceDate)) return true;
 

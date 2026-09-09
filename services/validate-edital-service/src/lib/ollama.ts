@@ -1,4 +1,5 @@
 import { withOllamaSlot } from "../../../../shared/ollamaRequestSlot.ts";
+import { getAiProvider, openRouterChat } from "../../../../shared/openrouter.ts";
 import { describeFetchError, isOllamaServerCrash } from "./fetchError";
 import { ollamaFetch } from "./ollamaHttp";
 import { getResolvedOllamaBaseUrl, getResolvedOllamaModel } from "./ollamaResolve";
@@ -177,6 +178,23 @@ async function ollamaGenerateOnce(prompt: string, baseUrl: string, model: string
 }
 
 export async function ollamaGenerate(prompt: string): Promise<string> {
+  if (getAiProvider() === "openrouter") {
+    await waitGenerateGap();
+    try {
+      return await withRetry(
+        () =>
+          openRouterChat(prompt, {
+            maxTokens: getOllamaNumPredict(),
+            temperature: parseFloat(process.env.OLLAMA_TEMPERATURE || "0") || 0,
+            timeoutMs: getOllamaGenerateTimeoutMs(),
+          }),
+        { label: "openrouter generate", attempts: getOllamaGenerateRetries() },
+      );
+    } finally {
+      lastGenerateEndMs = Date.now();
+    }
+  }
+
   await waitGenerateGap();
   const baseUrl = getResolvedOllamaBaseUrl();
   const model = getResolvedOllamaModel();

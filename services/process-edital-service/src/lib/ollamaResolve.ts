@@ -144,8 +144,16 @@ async function resolveOllamaModels(baseUrl: string): Promise<void> {
 
 /**
  * Escolhe URL Ollama acessível. Com OLLAMA_PREFER_LOCAL=1 (default), tenta localhost antes do NLB AWS.
+ * When AI_PROVIDER=openrouter, Ollama is not required — skip probe.
  */
 export async function initOllamaBaseUrl(): Promise<string> {
+  const provider = String(process.env.AI_PROVIDER || "openrouter").trim().toLowerCase();
+  if (provider === "openrouter") {
+    resolvedBase = "openrouter";
+    console.log("[process-edital] AI_PROVIDER=openrouter — skipping Ollama probe");
+    return resolvedBase;
+  }
+
   if (resolvedBase) return resolvedBase;
 
   const configured = normalizeBase(process.env.OLLAMA_BASE_URL || "");

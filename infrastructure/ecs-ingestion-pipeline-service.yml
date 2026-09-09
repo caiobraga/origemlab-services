@@ -34,6 +34,24 @@ Parameters:
   OllamaBaseUrl:
     Type: String
     Default: ""
+    Description: "Base URL do Ollama — opcional se AI_PROVIDER=openrouter"
+  AiProvider:
+    Type: String
+    Default: openrouter
+    AllowedValues: [openrouter, ollama]
+  OpenRouterApiKey:
+    Type: String
+    NoEcho: true
+    Default: ""
+  OpenRouterChatModel:
+    Type: String
+    Default: "qwen/qwen-2.5-7b-instruct"
+  OpenRouterEmbedModel:
+    Type: String
+    Default: "baai/bge-m3"
+  EmbedDimensions:
+    Type: Number
+    Default: 1024
   OllamaChatModel:
     Type: String
     Default: "gemma2:2b"
@@ -72,7 +90,6 @@ Parameters:
     Default: 120000
 
 Conditions:
-  HasOllamaUrl: !Not [!Equals [!Ref OllamaBaseUrl, ""]]
   IsContinuous: !Equals [!Ref OrchestrationMode, continuous]
   IsScheduled: !Equals [!Ref OrchestrationMode, scheduled]
 
@@ -141,70 +158,49 @@ Resources:
               awslogs-group: !Ref LogGroup
               awslogs-region: !Ref AWS::Region
               awslogs-stream-prefix: ecs
-          Environment: !If
-            - HasOllamaUrl
-            - - Name: EVENT_BUS_NAME
-                Value: !Ref EventBusName
-              - Name: SUPABASE_URL
-                Value: !Ref SupabaseUrl
-              - Name: SUPABASE_SERVICE_ROLE_KEY
-                Value: !Ref SupabaseServiceRoleKey
-              - Name: OLLAMA_BASE_URL
-                Value: !Ref OllamaBaseUrl
-              - Name: OLLAMA_CHAT_MODEL
-                Value: !Ref OllamaChatModel
-              - Name: OLLAMA_EMBED_MODEL
-                Value: !Ref OllamaEmbedModel
-              - Name: NODE_DNS_IPV4FIRST
-                Value: !Ref NodeDnsIpv4First
-              - Name: SCRAPER_FETCH_RETRIES
-                Value: !Ref ScraperFetchRetries
-              - Name: SCRAPER_FETCH_CONNECT_TIMEOUT_MS
-                Value: !Ref ScraperFetchConnectTimeoutMs
-              - Name: SCRAPER_FETCH_HEADERS_TIMEOUT_MS
-                Value: !Ref ScraperFetchHeadersTimeoutMs
-              - Name: SCRAPER_FETCH_BODY_TIMEOUT_MS
-                Value: !Ref ScraperFetchBodyTimeoutMs
-              - Name: SCRAPER_SOURCE_TIMEOUT_MS
-                Value: !Ref ScraperSourceTimeoutMs
-              - Name: SCRAPER_SOURCE
-                Value: "all"
-              - Name: ECS_WORKER_LOOP
-                Value: !If [IsContinuous, "1", "0"]
-              - Name: WORKER_IDLE_MS_AFTER_WORK
-                Value: !Sub "${WorkerIdleMsAfterWork}"
-              - Name: WORKER_IDLE_MS_NO_WORK
-                Value: !Sub "${WorkerIdleMsNoWork}"
-            - - Name: EVENT_BUS_NAME
-                Value: !Ref EventBusName
-              - Name: SUPABASE_URL
-                Value: !Ref SupabaseUrl
-              - Name: SUPABASE_SERVICE_ROLE_KEY
-                Value: !Ref SupabaseServiceRoleKey
-              - Name: OLLAMA_CHAT_MODEL
-                Value: !Ref OllamaChatModel
-              - Name: OLLAMA_EMBED_MODEL
-                Value: !Ref OllamaEmbedModel
-              - Name: NODE_DNS_IPV4FIRST
-                Value: !Ref NodeDnsIpv4First
-              - Name: SCRAPER_FETCH_RETRIES
-                Value: !Ref ScraperFetchRetries
-              - Name: SCRAPER_FETCH_CONNECT_TIMEOUT_MS
-                Value: !Ref ScraperFetchConnectTimeoutMs
-              - Name: SCRAPER_FETCH_HEADERS_TIMEOUT_MS
-                Value: !Ref ScraperFetchHeadersTimeoutMs
-              - Name: SCRAPER_FETCH_BODY_TIMEOUT_MS
-                Value: !Ref ScraperFetchBodyTimeoutMs
-              - Name: SCRAPER_SOURCE_TIMEOUT_MS
-                Value: !Ref ScraperSourceTimeoutMs
-              - Name: SCRAPER_SOURCE
-                Value: "all"
-              - Name: ECS_WORKER_LOOP
-                Value: !If [IsContinuous, "1", "0"]
-              - Name: WORKER_IDLE_MS_AFTER_WORK
-                Value: !Sub "${WorkerIdleMsAfterWork}"
-              - Name: WORKER_IDLE_MS_NO_WORK
-                Value: !Sub "${WorkerIdleMsNoWork}"
+          Environment:
+            - Name: EVENT_BUS_NAME
+              Value: !Ref EventBusName
+            - Name: SUPABASE_URL
+              Value: !Ref SupabaseUrl
+            - Name: SUPABASE_SERVICE_ROLE_KEY
+              Value: !Ref SupabaseServiceRoleKey
+            - Name: AI_PROVIDER
+              Value: !Ref AiProvider
+            - Name: OPENROUTER_API_KEY
+              Value: !Ref OpenRouterApiKey
+            - Name: OPENROUTER_CHAT_MODEL
+              Value: !Ref OpenRouterChatModel
+            - Name: OPENROUTER_EMBED_MODEL
+              Value: !Ref OpenRouterEmbedModel
+            - Name: EMBED_DIMENSIONS
+              Value: !Sub "${EmbedDimensions}"
+            - Name: OLLAMA_BASE_URL
+              Value: !Ref OllamaBaseUrl
+            - Name: OLLAMA_CHAT_MODEL
+              Value: !Ref OllamaChatModel
+            - Name: OLLAMA_EMBED_MODEL
+              Value: !Ref OllamaEmbedModel
+            - Name: NODE_DNS_IPV4FIRST
+              Value: !Ref NodeDnsIpv4First
+            - Name: SCRAPER_FETCH_RETRIES
+              Value: !Ref ScraperFetchRetries
+            - Name: SCRAPER_FETCH_CONNECT_TIMEOUT_MS
+              Value: !Ref ScraperFetchConnectTimeoutMs
+            - Name: SCRAPER_FETCH_HEADERS_TIMEOUT_MS
+              Value: !Ref ScraperFetchHeadersTimeoutMs
+            - Name: SCRAPER_FETCH_BODY_TIMEOUT_MS
+              Value: !Ref ScraperFetchBodyTimeoutMs
+            - Name: SCRAPER_SOURCE_TIMEOUT_MS
+              Value: !Ref ScraperSourceTimeoutMs
+            - Name: SCRAPER_SOURCE
+              Value: "all"
+            - Name: ECS_WORKER_LOOP
+              Value: !If [IsContinuous, "1", "0"]
+            - Name: WORKER_IDLE_MS_AFTER_WORK
+              Value: !Sub "${WorkerIdleMsAfterWork}"
+            - Name: WORKER_IDLE_MS_NO_WORK
+              Value: !Sub "${WorkerIdleMsNoWork}"
 
   SchedulerRole:
     Type: AWS::IAM::Role

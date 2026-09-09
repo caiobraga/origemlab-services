@@ -11,7 +11,9 @@
 #   SUPABASE_URL
 #   SUPABASE_SERVICE_ROLE_KEY
 # Optional (same names as .env):
-#   OLLAMA_BASE_URL
+#   OPENROUTER_API_KEY (secret; required when AI_PROVIDER=openrouter)
+#   AI_PROVIDER, OPENROUTER_CHAT_MODEL, OPENROUTER_EMBED_MODEL, EMBED_DIMENSIONS
+#   OLLAMA_BASE_URL (only when AI_PROVIDER=ollama)
 #   OLLAMA_MODEL                         modelo no container (generate + embed fallback)
 #   PROCESS_EDITAL_OLLAMA_MODEL          se definida, sobrescreve OLLAMA_MODEL só neste deploy
 #   OLLAMA_TIMEOUT_MS                    default 600000 (embed + fallback)
@@ -70,13 +72,12 @@ jobs:
         uses: aws-actions/amazon-ecr-login@v2
 
       - name: Build and push image
-        working-directory: services/process-edital-service
         env:
           IMAGE_TAG: ${{ github.sha }}
         run: |
           REGISTRY="${{ steps.login-ecr.outputs.registry }}"
           IMAGE="${REGISTRY}/origemlab-process-edital-service"
-          docker build -t "${IMAGE}:${IMAGE_TAG}" -t "${IMAGE}:latest" .
+          docker build -f services/process-edital-service/Dockerfile -t "${IMAGE}:${IMAGE_TAG}" -t "${IMAGE}:latest" .
           docker push "${IMAGE}:${IMAGE_TAG}"
           docker push "${IMAGE}:latest"
           echo "IMAGE_URI=${IMAGE}:${IMAGE_TAG}" >> "$GITHUB_ENV"
@@ -91,6 +92,11 @@ jobs:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
           OLLAMA_BASE_URL: ${{ vars.OLLAMA_BASE_URL }}
+          AI_PROVIDER: ${{ vars.AI_PROVIDER }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          OPENROUTER_CHAT_MODEL: ${{ vars.OPENROUTER_CHAT_MODEL }}
+          OPENROUTER_EMBED_MODEL: ${{ vars.OPENROUTER_EMBED_MODEL }}
+          EMBED_DIMENSIONS: ${{ vars.EMBED_DIMENSIONS }}
           SCHEDULE_EXPRESSION: ${{ vars.PROCESS_EDITAL_SCHEDULE_EXPRESSION }}
           CLUSTER_NAME: ${{ vars.PROCESS_EDITAL_CLUSTER_NAME }}
           OLLAMA_MODEL: ${{ vars.OLLAMA_MODEL }}
@@ -116,8 +122,7 @@ jobs:
           : "${SECURITY_GROUP_IDS:?Set repo variable SECURITY_GROUP_IDS}"
           : "${SUPABASE_URL:?Set repo secret SUPABASE_URL}"
           : "${SUPABASE_SERVICE_ROLE_KEY:?Set repo secret SUPABASE_SERVICE_ROLE_KEY}"
-          : "${OLLAMA_BASE_URL:?Set repo variable OLLAMA_BASE_URL}"
-          : "${IMAGE_URI:?IMAGE_URI missing after ECR push}"
+                    : "${IMAGE_URI:?IMAGE_URI missing after ECR push}"
 
           escape_cf_list() { printf '%s' "$1" | sed 's/,/\\,/g'; }
           SUBNET_IDS_CF=$(escape_cf_list "${SUBNET_IDS}")
@@ -136,12 +141,14 @@ jobs:
             "SecurityGroupIds=${SG_IDS_CF}"
             "SupabaseUrl=${SUPABASE_URL}"
             "SupabaseServiceRoleKey=${SUPABASE_SERVICE_ROLE_KEY}"
-            "OllamaBaseUrl=${OLLAMA_BASE_URL}"
             "ScheduleExpression=${SCHED}"
             "ClusterName=${CLUSTER}"
             "OrchestrationMode=${ORCH}"
             "EventBusName=${EB}"
           )
+
+          # shellcheck source=../scripts/append-openrouter-cfn.sh
+          source .github/scripts/append-openrouter-cfn.sh
 
           # Sempre enviar OllamaModel: se só PROCESS_EDITAL_OLLAMA_MODEL estiver no GitHub, o antigo
           # `if [ -n OLLAMA_MODEL ]` omitia o override e o stack ficava no default CloudFormation (qwen2.5:7b).

@@ -2,6 +2,7 @@ import { FIELD_KEYWORD_HINTS, PROCESS_EDITAL_FIELDS } from "./constants.mjs";
 import { describeFetchError, isUnreachableNetworkError } from "./fetchError.mjs";
 import { ollamaFetch } from "./ollamaHttp.mjs";
 import { getOllamaBaseUrl, getOllamaChatModel, logOllamaModelHintOnce } from "./ollamaResolve.mjs";
+import { getAiProvider, openRouterChat } from "../../../shared/openrouter.mjs";
 
 const CONTEXTO_BUSCA_PREFIX = "[CONTEXTO PARA BUSCA — alinhado ao pipeline process-edital-info]";
 
@@ -97,39 +98,49 @@ Resposta APENAS neste formato JSON:
 
   const url = `${ollamaBaseUrl()}/api/chat`;
   const maxRetries = Math.max(0, parseInt(process.env.OLLAMA_CHAT_RETRIES || "2", 10) || 2);
+  const useOpenRouter = getAiProvider() === "openrouter";
 
   let lastErr;
   const chatTimeoutMs = enrichChatTimeoutMs();
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     try {
-      const controller = new AbortController();
-      const t = setTimeout(() => controller.abort(), chatTimeoutMs);
-      let res;
-      try {
-        res = await ollamaFetch(
-          url,
-          {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              model: chatModel(),
-              stream: false,
-              messages: [
-                { role: "system", content: system },
-                { role: "user", content: user },
-              ],
-              options: { temperature: 0.1, num_predict: enrichNumPredict() },
-            }),
-            signal: controller.signal,
-          },
-          chatTimeoutMs,
-        );
-      } finally {
-        clearTimeout(t);
+      let msg = "";
+      if (useOpenRouter) {
+        msg = await openRouterChat(`${system}\n\n${user}`, {
+          maxTokens: enrichNumPredict(),
+          temperature: 0.1,
+          timeoutMs: chatTimeoutMs,
+        });
+      } else {
+        const controller = new AbortController();
+        const t = setTimeout(() => controller.abort(), chatTimeoutMs);
+        let res;
+        try {
+          res = await ollamaFetch(
+            url,
+            {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                model: chatModel(),
+                stream: false,
+                messages: [
+                  { role: "system", content: system },
+                  { role: "user", content: user },
+                ],
+                options: { temperature: 0.1, num_predict: enrichNumPredict() },
+              }),
+              signal: controller.signal,
+            },
+            chatTimeoutMs,
+          );
+        } finally {
+          clearTimeout(t);
+        }
+        if (!res.ok) throw new Error(`Ollama chat: ${res.status} ${(await res.text()).slice(0, 500)}`);
+        const data = await res.json();
+        msg = data?.message?.content ?? data?.response ?? "";
       }
-      if (!res.ok) throw new Error(`Ollama chat: ${res.status} ${(await res.text()).slice(0, 500)}`);
-      const data = await res.json();
-      const msg = data?.message?.content ?? data?.response ?? "";
       const parsed = parseJsonLoose(msg);
       if (!parsed || typeof parsed !== "object") throw new Error("JSON inválido do modelo");
 

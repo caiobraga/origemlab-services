@@ -11,8 +11,10 @@
 # Required GitHub Actions repository secrets:
 #   SUPABASE_URL
 #   SUPABASE_SERVICE_ROLE_KEY
+#   OPENROUTER_API_KEY
+# OpenRouter: secret OPENROUTER_API_KEY; vars AI_PROVIDER, OPENROUTER_*, EMBED_DIMENSIONS
 # Optional (same names as .env):
-#   OLLAMA_BASE_URL
+#   OLLAMA_BASE_URL (only when AI_PROVIDER=ollama)
 #   OLLAMA_CHAT_MODEL
 #   OLLAMA_EMBED_MODEL
 #   EVENT_BUS_NAME
@@ -64,13 +66,12 @@ jobs:
         uses: aws-actions/amazon-ecr-login@v2
 
       - name: Build and push image
-        working-directory: services/document-processor
         env:
           IMAGE_TAG: ${{ github.sha }}
         run: |
           REGISTRY="${{ steps.login-ecr.outputs.registry }}"
           IMAGE="${REGISTRY}/origemlab-document-processor"
-          docker build -t "${IMAGE}:${IMAGE_TAG}" -t "${IMAGE}:latest" .
+          docker build -f services/document-processor/Dockerfile -t "${IMAGE}:${IMAGE_TAG}" -t "${IMAGE}:latest" .
           docker push "${IMAGE}:${IMAGE_TAG}"
           docker push "${IMAGE}:latest"
           echo "IMAGE_URI=${IMAGE}:${IMAGE_TAG}" >> "$GITHUB_ENV"
@@ -86,6 +87,11 @@ jobs:
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
           EVENT_BUS_NAME: ${{ vars.EVENT_BUS_NAME }}
           OLLAMA_BASE_URL: ${{ vars.OLLAMA_BASE_URL }}
+          AI_PROVIDER: ${{ vars.AI_PROVIDER }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          OPENROUTER_CHAT_MODEL: ${{ vars.OPENROUTER_CHAT_MODEL }}
+          OPENROUTER_EMBED_MODEL: ${{ vars.OPENROUTER_EMBED_MODEL }}
+          EMBED_DIMENSIONS: ${{ vars.EMBED_DIMENSIONS }}
           SCHEDULE_EXPRESSION: ${{ vars.DOCUMENT_PROCESSOR_SCHEDULE_EXPRESSION }}
           CLUSTER_NAME: ${{ vars.DOCUMENT_PROCESSOR_CLUSTER_NAME }}
           OLLAMA_CHAT_MODEL: ${{ vars.OLLAMA_CHAT_MODEL }}
@@ -126,14 +132,14 @@ jobs:
             "OrchestrationMode=${ORCH}"
           )
 
+          # shellcheck source=../scripts/append-openrouter-cfn.sh
+          source .github/scripts/append-openrouter-cfn.sh
+
           if [ -n "${OLLAMA_CHAT_MODEL:-}" ]; then
             OVERRIDES+=("OllamaChatModel=${OLLAMA_CHAT_MODEL}")
           fi
           if [ -n "${OLLAMA_EMBED_MODEL:-}" ]; then
             OVERRIDES+=("OllamaEmbedModel=${OLLAMA_EMBED_MODEL}")
-          fi
-          if [ -n "${OLLAMA_BASE_URL:-}" ]; then
-            OVERRIDES+=("OllamaBaseUrl=${OLLAMA_BASE_URL}")
           fi
           if [ -n "${WORKER_IDLE_MS_AFTER_WORK:-}" ]; then
             OVERRIDES+=("WorkerIdleMsAfterWork=${WORKER_IDLE_MS_AFTER_WORK}")

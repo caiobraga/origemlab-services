@@ -57,6 +57,11 @@ jobs:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
           OLLAMA_BASE_URL: ${{ vars.OLLAMA_BASE_URL }}
+          AI_PROVIDER: ${{ vars.AI_PROVIDER }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          OPENROUTER_CHAT_MODEL: ${{ vars.OPENROUTER_CHAT_MODEL }}
+          OPENROUTER_EMBED_MODEL: ${{ vars.OPENROUTER_EMBED_MODEL }}
+          EMBED_DIMENSIONS: ${{ vars.EMBED_DIMENSIONS }}
           SCHEDULE_EXPRESSION: ${{ vars.INGESTION_PIPELINE_SCHEDULE_EXPRESSION }}
           CLUSTER_NAME: ${{ vars.INGESTION_PIPELINE_CLUSTER_NAME }}
           EVENT_BUS_NAME: ${{ vars.EVENT_BUS_NAME }}
@@ -105,7 +110,9 @@ jobs:
             "EventBusName=${EB}"
           )
 
-          [ -n "${OLLAMA_BASE_URL:-}" ] && OVERRIDES+=("OllamaBaseUrl=${OLLAMA_BASE_URL}")
+          # shellcheck source=../scripts/append-openrouter-cfn.sh
+          source .github/scripts/append-openrouter-cfn.sh
+
           [ -n "${OLLAMA_CHAT_MODEL:-}" ] && OVERRIDES+=("OllamaChatModel=${OLLAMA_CHAT_MODEL}")
           [ -n "${OLLAMA_EMBED_MODEL:-}" ] && OVERRIDES+=("OllamaEmbedModel=${OLLAMA_EMBED_MODEL}")
           [ -n "${NODE_DNS_IPV4FIRST:-}" ] && OVERRIDES+=("NodeDnsIpv4First=${NODE_DNS_IPV4FIRST}")

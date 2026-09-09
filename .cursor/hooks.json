@@ -1,0 +1,35 @@
+{
+  "version": 1,
+  "hooks": {
+    "sessionStart": [
+      {
+        "command": "/home/caio/.cursor/hooks/protected-skills-session-start.js"
+      }
+    ],
+    "beforeSubmitPrompt": [
+      {
+        "command": "/home/caio/.cursor/hooks/protected-skills-before-submit-prompt.js",
+        "matcher": "UserPromptSubmit"
+      }
+    ],
+    "postToolUse": [
+      {
+        "command": "/home/caio/.cursor/hooks/protected-skills-post-tool-use-skill-read.js",
+        "matcher": "Read"
+      },
+      {
+        "command": "/home/caio/.cursor/hooks/protected-skills-post-tool-use-skill-read.js",
+        "matcher": "ReadFile"
+      }
+    ],
+    "preToolUse": [
+      {
+        "command": "/home/caio/.cursor/hooks/protected-skills-pre-tool-use-skill-read.js"
+      }
+    ]
+  },
+  "_protectedSkills": {
+    "installedBuildId": "20260706084436",
+    "installedAt": 1784488056294
+  }
+}

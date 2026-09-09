@@ -166,3 +166,127 @@ export function extractValorLinesForStorage(text: string, maxLines = 6, maxLineL
 
   return [...new Set(lines)].slice(0, maxLines);
 }
+
+function safeParseJsonObject(raw: string): Record<string, unknown> | null {
+  try {
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Extrai linhas legíveis de `valor_projeto` (string JSON `{valor:[...]}`, objeto ou texto). */
+export function flattenValorProjetoLines(value: unknown): string[] {
+  if (value == null) return [];
+
+  const fromObject = (obj: Record<string, unknown>): string[] => {
+    const items: string[] = [];
+    const v = obj.valor;
+    if (Array.isArray(v)) {
+      for (const x of v) {
+        if (typeof x === "string") {
+          const t = x.replace(/\s+/g, " ").trim();
+          if (t) items.push(t);
+        } else if (x && typeof x === "object" && (x as { valor?: unknown }).valor != null) {
+          const t = String((x as { valor: unknown }).valor).replace(/\s+/g, " ").trim();
+          if (t) items.push(t);
+        }
+      }
+    } else if (typeof v === "string") {
+      const t = v.replace(/\s+/g, " ").trim();
+      if (t) items.push(t);
+    }
+    return items;
+  };
+
+  if (typeof value === "object" && value !== null) {
+    return fromObject(value as Record<string, unknown>);
+  }
+
+  const text = String(value).replace(/\s+/g, " ").trim();
+  if (!text) return [];
+
+  if (text.startsWith("{")) {
+    const parsed = safeParseJsonObject(text);
+    if (parsed) return fromObject(parsed);
+  }
+
+  return [text];
+}
+
+/** Normaliza referência tipo edital/chamada (`046/2026`, `00001946/2026`) para comparação. */
+export function normalizeEditalNumeroRef(raw: string): string | null {
+  const m = /^(\d{1,10})\s*\/\s*(\d{4})$/.exec(String(raw || "").replace(/\s/g, ""));
+  if (!m) return null;
+  return `${Number.parseInt(m[1], 10)}/${m[2]}`;
+}
+
+const EDITAL_NUMERO_LINE = /^(\d{1,10}|0+\d{1,10})\s*\/\s*\d{4}$/;
+const PURE_DATE_LINE =
+  /^\d{1,2}\s*\/\s*\d{1,2}\s*\/\s*\d{2,4}$|^\d{4}-\d{2}-\d{2}$|^\d{1,2}\s+de\s+\w+\s+de\s+\d{4}$/i;
+
+/** Linha que parece número de edital/chamada, não valor financeiro. */
+export function valorLineLooksLikeEditalNumero(line: string): boolean {
+  const t = String(line || "").replace(/\s+/g, " ").trim();
+  if (!t) return false;
+  if (/r\s*\$/i.test(t)) return false;
+  if (EDITAL_NUMERO_LINE.test(t)) return true;
+  const compact = t.replace(/\s/g, "");
+  if (/^0*\d{1,10}\/\d{4}$/.test(compact) && !/r\s*\$/i.test(t)) return true;
+  return false;
+}
+
+const MONETARY_KEYWORDS =
+  /\b(milh[oõ]es?|mil\b|bolsa|teto|financiamento|contrapartida|recurso|dotacao|dotação|reais|real\b|us\$|€|orçamento|orcamento|investimento|subvenção|subvencao|auxilio|auxílio|premio|prêmio|pagamento|mensal|anual|limite|maximo|máximo|minimo|mínimo)\b/i;
+
+/** Indica sinais de valor monetário (R$, números por extenso ou termos financeiros). */
+export function valorLineHasMonetarySignal(line: string): boolean {
+  const t = String(line || "").trim();
+  if (!t) return false;
+  if (extractBRLAmountsFromText(t).length > 0) return true;
+  if (parseWrittenPortugueseMoneyPhrase(t) != null) return true;
+  return MONETARY_KEYWORDS.test(t);
+}
+
+/** Linha claramente inválida como valor financeiro (nº edital, data pura, só dígitos). */
+export function valorLineDefinitelyInvalid(line: string): boolean {
+  const t = String(line || "").replace(/\s+/g, " ").trim();
+  if (!t) return true;
+  if (valorLineLooksLikeEditalNumero(t)) return true;
+  if (PURE_DATE_LINE.test(t)) return true;
+  if (/^\d[\d./\s-]*$/.test(t) && !valorLineHasMonetarySignal(t)) return true;
+  return false;
+}
+
+/** `valor_projeto` coincide com o número do edital (ex.: `00001946/2026`). */
+export function valorMatchesEditalNumero(value: unknown, editalNumero: string | null | undefined): boolean {
+  const ref = editalNumero ? normalizeEditalNumeroRef(editalNumero) : null;
+  if (!ref) return false;
+  return flattenValorProjetoLines(value).some((line) => {
+    const lineRef = normalizeEditalNumeroRef(line);
+    if (lineRef && lineRef === ref) return true;
+    const compact = line.replace(/\s/g, "").toLowerCase();
+    const numCompact = String(editalNumero).replace(/\s/g, "").toLowerCase();
+    return compact === numCompact;
+  });
+}
+
+/** Heurística: valor suspeito (nº edital, sem sinal monetário, etc.) — candidato a reextração. */
+export function isSuspiciousValorProjeto(value: unknown, editalNumero?: string | null): boolean {
+  const lines = flattenValorProjetoLines(value);
+  if (lines.length === 0) return true;
+  if (editalNumero && valorMatchesEditalNumero(value, editalNumero)) return true;
+  if (lines.some((l) => valorLineDefinitelyInvalid(l))) return true;
+  if (lines.every((l) => !valorLineHasMonetarySignal(l))) return true;
+  return false;
+}
+
+/** Heurística rápida (sem LLM): valor plausível para persistir ou considerar útil. */
+export function isPlausibleValorProjetoHeuristic(value: unknown, editalNumero?: string | null): boolean {
+  const lines = flattenValorProjetoLines(value);
+  if (lines.length === 0) return false;
+  return !isSuspiciousValorProjeto(value, editalNumero);
+}

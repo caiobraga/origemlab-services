@@ -1,0 +1,68 @@
+# One-shot: rebuild document embeddings via OpenRouter (1024-d).
+# Run after pipelines are on AI_PROVIDER=openrouter.
+name: reembed-documents
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "rebuild-all = --rebuild --all; perguntas-only = embedding_perguntas backfill"
+        required: true
+        default: rebuild-all
+        type: choice
+        options:
+          - rebuild-all
+          - perguntas-only
+      limit:
+        description: "Optional --limit=N (empty = no limit)"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  reembed:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: services/document-processor/package-lock.json
+
+      - name: Install + re-embed
+        working-directory: services/document-processor
+        env:
+          AI_PROVIDER: ${{ vars.AI_PROVIDER }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          OPENROUTER_CHAT_MODEL: ${{ vars.OPENROUTER_CHAT_MODEL }}
+          OPENROUTER_EMBED_MODEL: ${{ vars.OPENROUTER_EMBED_MODEL }}
+          EMBED_DIMENSIONS: ${{ vars.EMBED_DIMENSIONS }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          MODE: ${{ inputs.mode }}
+          LIMIT: ${{ inputs.limit }}
+        run: |
+          set -euo pipefail
+          export AI_PROVIDER="${AI_PROVIDER:-openrouter}"
+          export EMBED_DIMENSIONS="${EMBED_DIMENSIONS:-1024}"
+          export OPENROUTER_EMBED_MODEL="${OPENROUTER_EMBED_MODEL:-baai/bge-m3}"
+          export OPENROUTER_CHAT_MODEL="${OPENROUTER_CHAT_MODEL:-qwen/qwen-2.5-7b-instruct}"
+          : "${OPENROUTER_API_KEY:?Set secret OPENROUTER_API_KEY}"
+          : "${SUPABASE_URL:?Set secret SUPABASE_URL}"
+          : "${SUPABASE_SERVICE_ROLE_KEY:?Set secret SUPABASE_SERVICE_ROLE_KEY}"
+          npm ci
+          ARGS=()
+          if [ "${MODE}" = "perguntas-only" ]; then
+            ARGS+=(--backfill-embedding-perguntas)
+          else
+            ARGS+=(--rebuild --all)
+          fi
+          if [ -n "${LIMIT:-}" ]; then
+            ARGS+=("--limit=${LIMIT}")
+          fi
+          echo "Running: node src/main.mjs ${ARGS[*]}"
+          node src/main.mjs "${ARGS[@]}"

@@ -5,6 +5,7 @@
   "scripts": {
     "start": "node src/main.mjs",
     "run": "node src/main.mjs",
+    "dev": "ECS_WORKER_LOOP=1 DISABLE_EVENTBRIDGE=1 node src/main.mjs",
     "backfill:embedding-perguntas": "node src/main.mjs --backfill-embedding-perguntas"
   },
   "engines": {

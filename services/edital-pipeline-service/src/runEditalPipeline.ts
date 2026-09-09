@@ -36,10 +36,25 @@ function pipelineValidateBeforeProcess(): boolean {
 
 const DEFAULT_PIPELINE_PROCESS_LIMIT = 50;
 
-/** Máx. editais na fase process por iteração. Default 50; 0 = não processar nesta iteração. */
+/** Máx. editais na fase process por iteração. Default 50; 0 + PROCESS_EDITAL_LIMIT=0 = ilimitado; 0 sozinho = pular fase. */
 function pipelineProcessLimit(): number {
   if (String(process.env.PIPELINE_SKIP_PROCESS || "").trim() === "1") return 0;
-  const raw = String(process.env.PIPELINE_PROCESS_LIMIT ?? String(DEFAULT_PIPELINE_PROCESS_LIMIT)).trim();
+
+  const raw = String(process.env.PIPELINE_PROCESS_LIMIT ?? "").trim();
+  const processEditalLimitRaw = String(process.env.PROCESS_EDITAL_LIMIT ?? "0").trim();
+  const processEditalLimit = parseInt(processEditalLimitRaw, 10);
+
+  if (raw === "0") {
+    if (Number.isFinite(processEditalLimit) && processEditalLimit === 0) return -1;
+    if (Number.isFinite(processEditalLimit) && processEditalLimit > 0) return processEditalLimit;
+    return 0;
+  }
+
+  if (!raw) {
+    const n = DEFAULT_PIPELINE_PROCESS_LIMIT;
+    return Number.isFinite(n) && n > 0 ? n : 0;
+  }
+
   const n = parseInt(raw, 10);
   return Number.isFinite(n) && n > 0 ? n : 0;
 }
@@ -86,7 +101,7 @@ async function runProcessPhase(
   limit: number,
   phaseLabel: string,
 ): Promise<{ hadWork: boolean; failed: boolean }> {
-  if (limit <= 0) {
+  if (limit === 0) {
     console.log(
       "\n⏭️ PIPELINE_PROCESS_LIMIT=0 — fase process-edital ignorada (0 editais nesta iteração).",
     );
@@ -94,15 +109,18 @@ async function runProcessPhase(
     return { hadWork: false, failed: false };
   }
 
+  const effectiveLimit = limit < 0 ? 0 : limit;
+  const limitLabel = limit < 0 ? "∞" : String(limit);
+
   console.log("\n════════════════════════════════════════");
-  console.log(`  ${phaseLabel} — process-edital-info (limite=${limit})`);
+  console.log(`  ${phaseLabel} — process-edital-info (limite=${limitLabel})`);
   console.log("════════════════════════════════════════\n");
 
   const prevCode = process.exitCode;
   let hadWork = false;
   let failed = false;
   try {
-    const r = await withProcessEditalLimit(limit, () => runProcessBatch());
+    const r = await withProcessEditalLimit(effectiveLimit, () => runProcessBatch());
     hadWork = r.hadWork;
   } catch (e) {
     failed = true;
@@ -136,10 +154,12 @@ export async function runEditalPipelineOnce(): Promise<{
     validate = await runValidatePhase("Fase 2/2");
   }
 
+  const processLimitLabel =
+    processLimit < 0 ? "∞" : processLimit === 0 ? "0(skip)" : String(processLimit);
   console.log(
     `\n✅ Pipeline concluído. order=${validateFirst ? "validate→process" : "process→validate"} ` +
       `validate_hadWork=${validate.hadWork} process_hadWork=${processPhase.hadWork} ` +
-      `validate_failed=${validate.failed} process_failed=${processPhase.failed} process_limit=${processLimit}`,
+      `validate_failed=${validate.failed} process_failed=${processPhase.failed} process_limit=${processLimitLabel}`,
   );
 
   if (validate.failed || processPhase.failed) {
@@ -157,8 +177,10 @@ export async function runEditalPipelineOnce(): Promise<{
 async function main() {
   const processLimit = pipelineProcessLimit();
   console.log("🔗 edital-pipeline-service (process → validate)");
+  const processLimitLabel =
+    processLimit < 0 ? "∞" : processLimit === 0 ? "0(skip)" : String(processLimit);
   console.log(
-    `   skip_validate=${skipValidatePhase()} validate_before_process=${pipelineValidateBeforeProcess()} process_limit=${processLimit} worker_loop=${ecsWorkerLoopEnabled()}`,
+    `   skip_validate=${skipValidatePhase()} validate_before_process=${pipelineValidateBeforeProcess()} process_limit=${processLimitLabel} worker_loop=${ecsWorkerLoopEnabled()}`,
   );
 
   if (ecsWorkerLoopEnabled()) {

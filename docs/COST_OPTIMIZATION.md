@@ -1,5 +1,7 @@
 # Otimização de custos AWS — OrigemLab
 
+> **Cloudflare migration:** após cutover (Pages + Workers + Queues), siga [`cloudflare/scripts/teardown-aws.sh`](../../cloudflare/scripts/teardown-aws.sh) e remova EB/ECS/CloudFront/S3. Até lá, mantenha AWS em paralelo.
+
 Guia prático para reduzir gastos sem perder funcionalidade. Estimativas em **us-east-1** (ordem de grandeza, 2026).
 
 ## Diagnóstico rápido (console AWS)
@@ -9,9 +11,9 @@ Execute este checklist **hoje**:
 | O que verificar | Onde | Ação se estiver ligado |
 |-----------------|------|------------------------|
 | Stacks legados ECS | CloudFormation → `origemlab-document-processor`, `scraper-runner`, `process-edital`, `validate-edital` | **Apagar** ou Desired count = 0 |
-| EC2 Ollama legado | Stack `origemlab-ollama` | **Apagar** (duplica o ECS Ollama) |
+| Ollama ECS/NLB (após OpenRouter) | Stack `origemlab-ollama-service` | Desired=0 depois **apagar** (`scripts/teardown-ollama.sh`) |
+| EC2 Ollama legado | Stack `origemlab-ollama` | **Apagar** |
 | Edital pipeline 24/7 | ECS → `origemlab-edital-pipeline` → Services com Desired=1 | Mudar para `scheduled` (ver abaixo) |
-| Ollama oversized | ECS → task 8 vCPU / 16 GB | Testar 4 vCPU / 8 GB |
 | EB oversized | Elastic Beanstalk → Configuration → Capacity | t3.small ou t4g.small costuma bastar |
 | CloudFront API | Distribuição extra só para API | Remover se EB já tem HTTPS |
 
@@ -29,21 +31,33 @@ done
 
 ---
 
-## Arquitetura alvo (menor custo)
+## Arquitetura alvo (menor custo) — pós OpenRouter (Phase A)
 
 ```
 S3 + CloudFront (front)          ~$5–15/mês
 Elastic Beanstalk (API)          ~$15–35/mês  (t3.small)
-Ollama ECS Fargate 4vCPU/8GB     ~$120–150/mês  (24/7 — maior custo fixo)
-NLB (Ollama)                     ~$20–25/mês
+OpenRouter (chat + embed)        variável (~$5–40/mês no volume atual)
 unified-pipeline (scheduled)     ~$35–90/mês  (4 fases numa task; sem overlap)
 Lambda (Telegram)                ~$1/mês
 Supabase (externo)               variável
 ─────────────────────────────────────────────
-Total AWS estimado               ~$180–320/mês
+Total AWS + AI estimado          ~$60–180/mês  (sem Fargate Ollama 24/7)
 ```
 
-**Princípio:** só o **Ollama** fica 24/7. O **unified-pipeline** roda as 4 fases em sequência num único schedule.
+**Princípio:** IA sob demanda via **OpenRouter** (sem NLB/Ollama fixo). O **unified-pipeline** roda as 4 fases em sequência num único schedule. Ver [OPENROUTER_CUTOVER.md](./OPENROUTER_CUTOVER.md).
+
+---
+
+## Legado: Ollama Fargate (evitar após cutover)
+
+Se ainda existir `origemlab-ollama-service` / NLB:
+
+```
+Ollama ECS Fargate 4vCPU/8GB     ~$120–150/mês  (24/7)
+NLB (Ollama)                     ~$20–25/mês
+```
+
+Tear down: `bash scripts/teardown-ollama.sh --scale-only` depois `--delete`.
 
 ---
 
@@ -51,7 +65,7 @@ Total AWS estimado               ~$180–320/mês
 
 ### 1. Unified pipeline (substitui ingestion + edital separados)
 
-**Problema:** dois stacks scheduled podiam rodar ao mesmo tempo e saturar o Ollama.
+**Problema:** dois stacks scheduled podiam rodar ao mesmo tempo e saturar o provedor de IA (Ollama legado / rate limits OpenRouter).
 
 **Solução:** `unified-pipeline-service` — um container, quatro fases, um schedule.
 
@@ -80,11 +94,13 @@ Para processar mais rápido sem voltar ao 24/7: aumente a frequência do schedul
 
 ---
 
-### 2. Ollama: right-size CPU/RAM (economia ~$100–150/mês)
+### 2. Ollama legado: right-size ou desligar (economia ~$140–175/mês)
 
-**Problema:** default era 8 vCPU / 16 GB para `gemma2:2b` — modelo pequeno; metade dos recursos costuma bastar.
+**Após Phase A (OpenRouter):** prefira `scripts/teardown-ollama.sh` em vez de right-size.
 
-**Solução:**
+**Problema (legado):** default era 8 vCPU / 16 GB para `gemma2:2b` — modelo pequeno; metade dos recursos costuma bastar.
+
+**Solução (só se ainda usar `AI_PROVIDER=ollama`):**
 
 | Variável GitHub | Antes | Depois (testar) |
 |-----------------|-------|-----------------|

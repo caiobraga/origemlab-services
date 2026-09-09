@@ -20,6 +20,8 @@ RUN cd pipeline && npm ci --omit=dev
 COPY services/scraper-runner/src ./scraper/src
 COPY services/document-processor/src ./document-processor/src
 COPY services/ingestion-pipeline-service/src ./pipeline/src
+# document-processor imports ../../../shared → /shared
+COPY shared /shared
 
 RUN chown -R pptruser:pptruser /app
 

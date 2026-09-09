@@ -31,10 +31,31 @@ Parameters:
     Description: "Supabase service role key (injected at deploy from GitHub Actions secrets)"
   OllamaBaseUrl:
     Type: String
-    Description: "Base URL do Ollama (ex.: http://host:11434)"
+    Description: "Base URL do Ollama (ex.: http://host:11434) — opcional se AI_PROVIDER=openrouter"
+    Default: ""
+  AiProvider:
+    Type: String
+    Default: openrouter
+    AllowedValues: [openrouter, ollama]
+  OpenRouterApiKey:
+    Type: String
+    NoEcho: true
+    Default: ""
+  OpenRouterChatModel:
+    Type: String
+    Default: "qwen/qwen-2.5-7b-instruct"
+  OpenRouterEmbedModel:
+    Type: String
+    Default: "baai/bge-m3"
+  EmbedDimensions:
+    Type: Number
+    Default: 1024
   OllamaModel:
     Type: String
     Default: "gemma2:2b"
+  OllamaEmbedModel:
+    Type: String
+    Default: "mxbai-embed-large"
   OllamaTimeoutMs:
     Type: Number
     Default: 240000
@@ -62,9 +83,6 @@ Parameters:
     Type: Number
     Default: 2
     Description: "Campos auditados em paralelo por edital"
-  OllamaEmbedModel:
-    Type: String
-    Default: "mxbai-embed-large"
   ValidateForceRevalidate:
     Type: Number
     Default: 0
@@ -142,6 +160,16 @@ Resources:
               awslogs-region: !Ref AWS::Region
               awslogs-stream-prefix: ecs
           Environment:
+            - Name: AI_PROVIDER
+              Value: !Ref AiProvider
+            - Name: OPENROUTER_API_KEY
+              Value: !Ref OpenRouterApiKey
+            - Name: OPENROUTER_CHAT_MODEL
+              Value: !Ref OpenRouterChatModel
+            - Name: OPENROUTER_EMBED_MODEL
+              Value: !Ref OpenRouterEmbedModel
+            - Name: EMBED_DIMENSIONS
+              Value: !Sub "${EmbedDimensions}"
             - Name: OLLAMA_BASE_URL
               Value: !Ref OllamaBaseUrl
             - Name: OLLAMA_MODEL

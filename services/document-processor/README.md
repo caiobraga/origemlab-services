@@ -1,26 +1,46 @@
 # document-processor
 
-Processa PDFs em `edital_pdfs`: descarrega, extrai texto, divide em **chunks**, opcionalmente **enriquece** cada chunk com Ollama (alinhado ao pipeline de extração de editais), grava em **`documents`** e gera **`embedding`** (texto completo do chunk) e **`embedding_perguntas`** (cabeçalho até “Perguntas exemplo”, para top‑k no process-edital). Opcionalmente emite **`DocumentProcessingCompleted`** no EventBridge.
+Processa PDFs em `edital_pdfs`: descarrega, extrai texto, divide em **chunks**, opcionalmente **enriquece** cada chunk (OpenRouter ou Ollama), grava em **`documents`** e gera **`embedding`** (texto completo do chunk) e **`embedding_perguntas`** (cabeçalho até “Perguntas exemplo”, para top‑k no process-edital). Opcionalmente emite **`DocumentProcessingCompleted`** no EventBridge.
 
 ## Requisitos
 
 - Node **≥ 20**
-- **Supabase** + **Ollama** (chat + embed) acessíveis a partir da máquina onde corres
+- **Supabase** + provedor de IA: **OpenRouter** (`AI_PROVIDER=openrouter`, default) ou **Ollama** (`AI_PROVIDER=ollama`)
 
 ## Configuração
 
-Ver bloco **document-processor** em [`.env.example`](../../.env.example): `SUPABASE_*`, `OLLAMA_BASE_URL`, `OLLAMA_CHAT_MODEL`, `OLLAMA_EMBED_MODEL`, `CHUNK_SIZE`, `CHUNK_OVERLAP`, `ENRICH_CHUNKS`, `DOCUMENT_PROCESSOR_EMBED_PERGUNTAS`, etc.
+Ver bloco **document-processor** em [`.env.example`](../../.env.example):
 
-**Produção:** `OLLAMA_BASE_URL=http://origemlab-ollama-nlb-312422980eebe2d0.elb.us-east-1.amazonaws.com:11434`.
+- OpenRouter: `OPENROUTER_API_KEY`, `OPENROUTER_CHAT_MODEL`, `OPENROUTER_EMBED_MODEL=baai/bge-m3`, `EMBED_DIMENSIONS=1024`
+- Ollama (emergência): `OLLAMA_BASE_URL`, `OLLAMA_CHAT_MODEL`, `OLLAMA_EMBED_MODEL`
+- Chunks: `CHUNK_SIZE`, `CHUNK_OVERLAP`, `ENRICH_CHUNKS`, `DOCUMENT_PROCESSOR_EMBED_PERGUNTAS`
 
 Migração para a segunda coluna de embedding: `sql/20260513_documents_embedding_perguntas.sql`.
+
+## Re-embed após cutover OpenRouter
+
+Após deploy com `AI_PROVIDER=openrouter` e `baai/bge-m3` (1024-d), **reconstrua** embeddings para não misturar vetores antigos (Ollama) com novos:
+
+```bash
+cd origemlab-services/services/document-processor
+# Reprocessa todos os PDFs (apaga chunks e re-embed)
+AI_PROVIDER=openrouter OPENROUTER_API_KEY=… npm run start -- --rebuild --all
+# Ou só preenche embedding_perguntas em linhas já existentes:
+AI_PROVIDER=openrouter OPENROUTER_API_KEY=… npm run backfill:embedding-perguntas
+```
+
+Spot-check: dimensão 1024 e top-k num edital conhecido.
+
+Também: [`docs/OPENROUTER_CUTOVER.md`](../../docs/OPENROUTER_CUTOVER.md).
 
 ## Correr localmente
 
 ```bash
 cd origemlab-services/services/document-processor
 npm install
-OLLAMA_BASE_URL=http://localhost:11434 npm run start -- --limit=2
+AI_PROVIDER=openrouter OPENROUTER_API_KEY=… npm run start -- --limit=2
+# ou emergência Ollama:
+AI_PROVIDER=ollama OLLAMA_BASE_URL=http://localhost:11434 npm run start -- --limit=2
 ```
 
 **Flags úteis** (ver `parseArgs` em `src/main.mjs`):
@@ -37,4 +57,4 @@ Simular o loop contínuo da task ECS: `ECS_WORKER_LOOP=1` (+ `WORKER_IDLE_MS_*` 
 
 ## Deploy (AWS)
 
-`deploy-document-processor.yml` → ECR `origemlab-document-processor` + stack `infrastructure/ecs-document-processor.yml`. Detalhes e variáveis GitHub: [README do repositório](../../README.md) (secção document-processor).
+`deploy-document-processor.yml` → ECR `origemlab-document-processor` + stack `infrastructure/ecs-document-processor.yml`. Detalhes e variáveis GitHub: [README do repositório](../../README.md) (secção document-processor). Secret `OPENROUTER_API_KEY`; vars `AI_PROVIDER`, `OPENROUTER_*`, `EMBED_DIMENSIONS`.

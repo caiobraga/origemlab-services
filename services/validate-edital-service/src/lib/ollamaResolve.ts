@@ -123,6 +123,13 @@ async function resolveOllamaModels(baseUrl: string): Promise<void> {
 }
 
 export async function initOllamaBaseUrl(): Promise<string> {
+  const provider = String(process.env.AI_PROVIDER || "openrouter").trim().toLowerCase();
+  if (provider === "openrouter") {
+    resolvedBase = "openrouter";
+    console.log("[validate-edital] AI_PROVIDER=openrouter — skipping Ollama probe");
+    return resolvedBase;
+  }
+
   if (resolvedBase) return resolvedBase;
 
   const configured = normalizeBase(process.env.OLLAMA_BASE_URL || "");
