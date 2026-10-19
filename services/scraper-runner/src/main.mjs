@@ -24,6 +24,7 @@ import { scrapeFapematCurrentYear } from "./fapematScrape.mjs";
 import { scrapeFapesCurrentYear } from "./fapesScrape.mjs";
 import { scrapeProsasCurrentYear } from "./prosasScrape.mjs";
 import { scrapeSigfapesCurrentYear } from "./sigfapesScrape.mjs";
+import { scrapeBndesCurrentYear } from "./bndesScrape.mjs";
 import { getSupabaseFromEnv, upsertEditaisAndPdfs } from "./supabaseUpsert.mjs";
 import { makeEventBase, publishDomainEvent } from "./eventbridge.mjs";
 import { loadEnv } from "./loadEnv.mjs";
@@ -181,6 +182,7 @@ const SOURCES = {
   fapes: { component: "scraper.fapes", fn: scrapeFapesCurrentYear },
   prosas: { component: "scraper.prosas", fn: scrapeProsasCurrentYear },
   sigfapes: { component: "scraper.sigfapes", fn: scrapeSigfapesCurrentYear },
+  bndes: { component: "scraper.bndes", fn: scrapeBndesCurrentYear },
 };
 
 /** Fontes lentas (Puppeteer / muitas páginas) — timeout maior que o default. */
