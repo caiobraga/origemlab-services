@@ -24,7 +24,7 @@ npm run run -- --source finep
 
 - **Todas as fontes:** `npm run run:all` ou `npm run run -- --source all`
 - **Fonte única:** `--source <chave>` (lista completa em `SOURCES` em `src/main.mjs`):
-  `finep`, `rotadofomento`, `plataforma-inovacao-industria`, `fapern`, `capta`, `fapac`, `secti`, `funcap`, `facepe`, `fapdf`, `fapeal`, `fapema`, `fapepi`, `fapergs`, `faperj`, `fapesc`, `fapespa`, `fapesq`, `fapitec`, `fapt`, `cnpq`, `fapemig`, `fapemat`, `fapes`, `prosas`, `sigfapes`.
+  `finep`, `rotadofomento`, `plataforma-inovacao-industria`, `fapern`, `capta`, `fapac`, `secti`, `funcap`, `facepe`, `fapdf`, `fapeal`, `fapema`, `fapepi`, `fapergs`, `faperj`, `fapesc`, `fapespa`, `fapesq`, `fapitec`, `fapt`, `cnpq`, `fapemig`, `fapemat`, `fapes`, `prosas`, `sigfapes`, `bndes`.
 
 ### Fontes com Puppeteer (variáveis opcionais)
 
@@ -36,6 +36,7 @@ npm run run -- --source finep
 | `fapes` | `FAPES_MAX_PANELS` |
 | `prosas` | `PROSAS_MAX_PAGES` |
 | `sigfapes` | **`SIGFAPES_USERNAME`**, **`SIGFAPES_PASSWORD`** (obrigatórios; sem credenciais a fonte é ignorada) |
+| `bndes` | `BNDES_HUB_URLS` (CSV, substitui hubs padrão), `BNDES_EXTRA_URLS` (CSV de páginas de chamada), `BNDES_MAX_DETAIL` (default 60) — sem Puppeteer |
 
 ## Docker
 
