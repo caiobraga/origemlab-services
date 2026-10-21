@@ -507,10 +507,19 @@ function parseAuditResponse(field: FieldKey, rawText: string, source?: string): 
   };
 }
 
+/**
+ * accept/replace encerram a auditoria. "reject" vem de um contexto parcial (trecho de evidência ou um
+ * lote de chunks) e só significa "não está aqui": seguimos varrendo e ele vale apenas se nenhum lote
+ * sustentar o valor — senão um trecho de evidência fraco apagava valores corretos do resto do PDF.
+ */
 function isAuditDecisionFinal(result: AuditResult): boolean {
   if (!result.ok) return false;
   const d = result.audit.decision;
-  return d === "accept" || d === "replace" || d === "reject";
+  return d === "accept" || d === "replace";
+}
+
+function isAuditReject(result: AuditResult): boolean {
+  return result.ok && result.audit.decision === "reject";
 }
 
 async function runSingleAuditCall(
@@ -542,6 +551,7 @@ async function callAuditForField(
     raw: "",
     audit: { decision: "unknown", reason: "no_audit_attempt" },
   };
+  let rejected: AuditResult | null = null;
 
   const snippet = evidence?.snippet?.trim();
   if (snippet) {
@@ -551,6 +561,7 @@ async function callAuditForField(
       const r = await runSingleAuditCall(field, edital, before, evidence, ctx, "evidence");
       last = r;
       if (isAuditDecisionFinal(r)) return r;
+      if (isAuditReject(r)) rejected = r;
     } catch (e) {
       if (isOllamaTimeout(e)) {
         console.warn(`  ✓ audit ${field}: timeout no trecho de evidência — varredura documento`);
@@ -561,11 +572,11 @@ async function callAuditForField(
   }
 
   if (!auditChunkScanEnabled()) {
-    return last;
+    return rejected ?? last;
   }
 
   const batches = buildAuditChunkBatches(rowsRaw);
-  if (batches.length === 0) return last;
+  if (batches.length === 0) return rejected ?? last;
 
   const cfg = auditBatchConfig();
   console.log(
@@ -581,6 +592,7 @@ async function callAuditForField(
       const r = await runSingleAuditCall(field, edital, before, evidence, batch.text, "chunkscan");
       last = r;
       if (isAuditDecisionFinal(r)) return r;
+      if (isAuditReject(r)) rejected = r;
     } catch (e) {
       if (isOllamaTimeout(e)) {
         console.warn(`  ✓ audit lote ${bi}/${batches.length}: timeout — próximo lote`);
@@ -590,7 +602,14 @@ async function callAuditForField(
     }
   }
 
-  return last;
+  return rejected ?? last;
+}
+
+function isStructuredJsonString(s: string): boolean {
+  const t = s.trim();
+  if (!(t.startsWith("{") || t.startsWith("["))) return false;
+  const parsed = safeJsonParse(t);
+  return parsed != null && typeof parsed === "object";
 }
 
 async function polishFreeTextField(
@@ -849,7 +868,10 @@ async function validateOneEdital(
     let polishMeta: { applied: boolean; raw?: string; note?: string } = { applied: false, note: "skipped" };
     if (audited.ok && finalValue != null && fieldType(field) === "string" && !skipPolish) {
       const s = typeof finalValue === "string" ? finalValue : null;
-      if (s && s.length > 0) {
+      if (s && isStructuredJsonString(s)) {
+        // Ex.: valor_projeto `{"valor":[...]}` — o front formata a lista; o polish virava prosa com markdown.
+        polishMeta = { applied: false, note: "structured_json" };
+      } else if (s && s.length > 0) {
         try {
           const polished = await polishFreeTextField(field, s, edital);
           finalValue = polished.text;
