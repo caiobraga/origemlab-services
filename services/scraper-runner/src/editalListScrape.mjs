@@ -1,7 +1,7 @@
 import * as cheerio from "cheerio";
 import { fetchHtml, absoluteUrl, normalizeSpaces, extractNumeroFromText } from "./simplePdfPageScrape.mjs";
 import { filterEditaisCurrentYear } from "./yearFilter.mjs";
-import { buildEditalTitulo, isSupplementTitle, isWeakLinkTitle } from "./scraperTitleUtils.mjs";
+import { buildEditalTitulo, isSupplementTitle, isWeakLinkTitle, pickPreferredTitulo } from "./scraperTitleUtils.mjs";
 import { resolvePdfFetchUrl } from "./pdfUrlResolve.mjs";
 
 /** PDFs institucionais que não são edital (rodapé, compliance, etc.). */
@@ -49,9 +49,13 @@ export function scrapeEditaisFromListPage({
   maxDetailFetches = 120,
   detailDelayMs = 250,
   listFetchTimeoutMs,
+  /** Optional: Puppeteer / custom fetch for JS-rendered list pages */
+  fetchListHtml = null,
 }) {
   return async () => {
-    const html = await fetchHtml(listUrl, listFetchTimeoutMs);
+    const html = fetchListHtml
+      ? await fetchListHtml(listUrl, listFetchTimeoutMs)
+      : await fetchHtml(listUrl, listFetchTimeoutMs);
     const $ = cheerio.load(html);
     const byKey = new Map();
 
@@ -120,9 +124,12 @@ export function scrapeEditaisFromListPage({
     });
 
     const detailRows = [...byKey.values()].filter((r) => r._needsDetail);
-    const maxN = Math.max(1, Math.min(maxDetailFetches, detailRows.length));
+    // Do not force maxN>=1: when there are no detail rows, Math.max(1,0) made
+    // detailRows[0] undefined and `delete row._needsDetail` threw TypeError.
+    const maxN = Math.min(maxDetailFetches, detailRows.length);
     for (let i = 0; i < maxN; i++) {
       const row = detailRows[i];
+      if (!row) continue;
       if (detailDelayMs > 0) await new Promise((r) => setTimeout(r, detailDelayMs));
       try {
         const detailHtml = await fetchHtml(row.link);
@@ -130,8 +137,8 @@ export function scrapeEditaisFromListPage({
         row.pdfUrls = [...new Set([...(row.pdfUrls || []), ...pdfs])];
         const detailTitle = extractTitleFromDetailHtml(detailHtml, row.titulo);
         row.titulo = buildEditalTitulo({
-          linkText: detailTitle,
-          numero: row.numero || extractNumeroFromText(detailTitle),
+          linkText: pickPreferredTitulo(row.titulo, detailTitle),
+          numero: row.numero || extractNumeroFromText(detailTitle) || extractNumeroFromText(row.titulo),
           fonte: source,
         });
         row.numero = row.numero || extractNumeroFromText(row.titulo);

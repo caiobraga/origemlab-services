@@ -2,6 +2,7 @@ import { filterEditaisCurrentYear } from "./yearFilter.mjs";
 import { normalizeSpaces, extractNumeroFromText } from "./simplePdfPageScrape.mjs";
 import { buildEditalTitulo } from "./scraperTitleUtils.mjs";
 import { withPuppeteerPage, gotoPage } from "./puppeteerHtml.mjs";
+import { scrapeFapesCurrentYear } from "./fapesScrape.mjs";
 
 const LOGIN_URL = "https://www.sigfapes.es.gov.br/";
 const EDITAIS_LIST_URL = "https://www.sigfapes.es.gov.br/index.php?id=7&acao=1";
@@ -35,22 +36,12 @@ async function loginSigfapes(page, username, password) {
     const btn = [...document.querySelectorAll("button, input[type='submit'], a")].find((el) =>
       /entrar|login|acessar/i.test(el.textContent || el.value || ""),
     );
-    if (btn) (btn).click();
+    if (btn) btn.click();
   });
   await new Promise((r) => setTimeout(r, 4000));
 }
 
-export async function scrapeSigfapesCurrentYear() {
-  const username = String(process.env.SIGFAPES_USERNAME || process.env.SIGFAPES_LOGIN || "").trim();
-  const password = String(process.env.SIGFAPES_PASSWORD || "").trim();
-
-  if (!username || !password) {
-    console.warn(
-      "[scraper.sigfapes] SIGFAPES_USERNAME e SIGFAPES_PASSWORD não configurados — fonte ignorada.",
-    );
-    return [];
-  }
-
+async function scrapeAuthenticated(username, password) {
   const rows = await withPuppeteerPage(async (page) => {
     await loginSigfapes(page, username, password);
     await gotoPage(page, EDITAIS_LIST_URL, { waitMs: 3500, timeoutMs: 60000 });
@@ -87,7 +78,7 @@ export async function scrapeSigfapesCurrentYear() {
     }, EDITAIS_LIST_URL);
   });
 
-  const editais = rows
+  return rows
     .filter((r) => r.titulo && !/^anexo\b/i.test(r.titulo))
     .map((r) => {
       const numero = r.numero || extractNumeroFromText(r.titulo);
@@ -101,6 +92,37 @@ export async function scrapeSigfapesCurrentYear() {
         processadoEm: new Date().toISOString(),
       };
     });
+}
 
-  return filterEditaisCurrentYear(editais);
+/**
+ * SIGFAPES requires login. Without credentials, fall back to public FAPES open-editais
+ * (same opportunities, published on fapes.es.gov.br) so the pipeline still ingests ES calls.
+ */
+export async function scrapeSigfapesCurrentYear() {
+  const username = String(process.env.SIGFAPES_USERNAME || process.env.SIGFAPES_LOGIN || "").trim();
+  const password = String(process.env.SIGFAPES_PASSWORD || "").trim();
+
+  if (username && password) {
+    try {
+      const authRows = await scrapeAuthenticated(username, password);
+      if (authRows.length > 0) return filterEditaisCurrentYear(authRows);
+      console.warn("[scraper.sigfapes] login ok mas nenhum edital — caindo no espelho público FAPES.");
+    } catch (e) {
+      console.warn(
+        `[scraper.sigfapes] login/listagem falhou (${e instanceof Error ? e.message : String(e)}) — caindo no espelho público FAPES.`,
+      );
+    }
+  } else {
+    console.warn(
+      "[scraper.sigfapes] SIGFAPES_USERNAME/PASSWORD não configurados — usando editais públicos da FAPES.",
+    );
+  }
+
+  const fapes = await scrapeFapesCurrentYear();
+  return fapes.map((e) => ({
+    ...e,
+    fonte: "sigfapes",
+    orgao: e.orgao || "FAPES",
+    processadoEm: new Date().toISOString(),
+  }));
 }

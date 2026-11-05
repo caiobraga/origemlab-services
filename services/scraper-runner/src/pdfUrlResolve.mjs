@@ -51,6 +51,22 @@ export function resolvePdfFetchUrl(url) {
     const parsed = new URL(u);
     const host = parsed.hostname.toLowerCase().replace(/^www\./, "");
 
+    // PDF.js / WordPress viewer shortcode: HTML shell with ?file=<real.pdf>
+    // (e.g. FAPEMA). Fetching the viewer returns text/html, not the PDF.
+    if (/viewer\.php$/i.test(parsed.pathname) || /\/pdfjs\//i.test(parsed.pathname)) {
+      const nested = parsed.searchParams.get("file") || parsed.searchParams.get("pdf");
+      if (nested) {
+        try {
+          const nestedUrl = new URL(nested, parsed.origin).toString();
+          if (/\.pdf($|\?|#)/i.test(nestedUrl) || nestedUrl.toLowerCase().includes(".pdf")) {
+            return resolvePdfFetchUrl(nestedUrl);
+          }
+        } catch {
+          // fall through
+        }
+      }
+    }
+
     if (host === "finep.gov.br" || host === "download.finep.gov.br") {
       if (/\/images\//i.test(parsed.pathname)) {
         return `https://legacy.finep.gov.br${parsed.pathname}${parsed.search}`;

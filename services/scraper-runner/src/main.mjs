@@ -190,6 +190,9 @@ const SLOW_SOURCE_TIMEOUT_MS = {
   "plataforma-inovacao-industria": 900_000,
   fapdf: 900_000,
   fapt: 900_000,
+  cnpq: 600_000,
+  prosas: 600_000,
+  fapespa: 600_000,
 };
 
 function getSourceTimeoutMs(source) {

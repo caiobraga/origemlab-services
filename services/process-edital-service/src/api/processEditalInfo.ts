@@ -27,6 +27,7 @@ import {
   isPlausibleValorProjetoHeuristic,
 } from "../../../../shared/editalValorExtract.ts";
 import { isValorProjetoAcceptable } from "../lib/valorProjetoValidate.ts";
+import { stripEchoedPromptHeader } from "../lib/promptEcho";
 
 type FieldEvidence = {
   /** `topk` = similaridade; `chunkscan` = lotes sequenciais do documento; `bulk`/`window` = legado. */
@@ -406,6 +407,7 @@ function promptForField(field: FieldKey, edital: Pick<EditalInfo, "numero" | "ti
     "Retorne APENAS UM OBJETO JSON VÁLIDO (sem markdown, sem texto extra, sem explicações).",
     "A sua resposta DEVE ser parseável por JSON.parse. Se não for, será descartada.",
     "Se não houver evidência suficiente no conteúdo, use null.",
+    "As linhas Edital/Campo abaixo são só contexto: nunca as repita dentro do valor extraído.",
     "",
     `Edital: ${edital.numero || "N/A"} — ${edital.titulo} (${edital.fonte || "N/A"})`,
     "",
@@ -1742,7 +1744,9 @@ async function extractFieldValue(
     }
     return { value: null, rawJson, modelOutput };
   }
-  return { value: typeof value === "string" ? value.trim() : null, rawJson, modelOutput };
+  // O modelo às vezes ecoa o cabeçalho do prompt ("Edital: … Campo: Localização …") dentro do valor.
+  const text = typeof value === "string" ? stripEchoedPromptHeader(value, edital) : "";
+  return { value: text || null, rawJson, modelOutput };
 }
 
 function previewContext(ctx: string, maxChars = 900): string {

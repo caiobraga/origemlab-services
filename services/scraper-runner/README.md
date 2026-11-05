@@ -30,12 +30,12 @@ npm run run -- --source finep
 
 | Fonte | Env |
 |-------|-----|
-| `cnpq` | `CNPQ_CHAMADAS_URL`, `CNPQ_MAX_ITEMS` |
+| `cnpq` | `CNPQ_CHAMADAS_URL` (default gov.br abertas), `CNPQ_MAX_ITEMS`, `CNPQ_MAX_DETAIL` |
 | `fapemig` | `FAPEMIG_MAX_ITEMS` |
 | `fapemat` | `FAPEMAT_MAX_ITEMS`, `FAPEMAT_EDITAL_URLS` (fallback) |
-| `fapes` | `FAPES_MAX_PANELS` |
-| `prosas` | `PROSAS_MAX_PAGES` |
-| `sigfapes` | **`SIGFAPES_USERNAME`**, **`SIGFAPES_PASSWORD`** (obrigatórios; sem credenciais a fonte é ignorada) |
+| `fapes` | `FAPES_LIST_URLS` (CSV opcional) |
+| `prosas` | `PROSAS_MAX_PAGES`, `PROSAS_PAGE_SIZE` |
+| `sigfapes` | **`SIGFAPES_USERNAME`**, **`SIGFAPES_PASSWORD`** (opcionais; sem credenciais usa espelho público FAPES) |
 | `bndes` | `BNDES_HUB_URLS` (CSV, substitui hubs padrão), `BNDES_EXTRA_URLS` (CSV de páginas de chamada), `BNDES_MAX_DETAIL` (default 60) — sem Puppeteer |
 
 ## Docker

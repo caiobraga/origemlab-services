@@ -114,9 +114,11 @@ async function upsertEditalRow(supabase, e) {
       .from("editais")
       .upsert(row, { onConflict: "numero,fonte", ignoreDuplicates: false })
       .select("id")
-      .single();
+      .limit(1);
     if (r.error) throw r.error;
-    return { id: r.data.id, created: false };
+    const id = r.data?.[0]?.id;
+    if (!id) throw new Error(`upsert numero/fonte returned no id (${e.fonte} ${e.numero})`);
+    return { id, created: false };
   }
 
   const existing = await supabase
@@ -124,18 +126,22 @@ async function upsertEditalRow(supabase, e) {
     .select("id")
     .eq("fonte", e.fonte)
     .eq("titulo", titulo)
-    .maybeSingle();
+    .order("criado_em", { ascending: true })
+    .limit(1);
   if (existing.error) throw existing.error;
 
-  if (existing.data?.id) {
-    const upd = await supabase.from("editais").update(row).eq("id", existing.data.id);
+  const existingId = existing.data?.[0]?.id;
+  if (existingId) {
+    const upd = await supabase.from("editais").update(row).eq("id", existingId);
     if (upd.error) throw upd.error;
-    return { id: existing.data.id, created: false };
+    return { id: existingId, created: false };
   }
 
-  const ins = await supabase.from("editais").insert(row).select("id").single();
+  const ins = await supabase.from("editais").insert(row).select("id").limit(1);
   if (ins.error) throw ins.error;
-  return { id: ins.data.id, created: true };
+  const id = ins.data?.[0]?.id;
+  if (!id) throw new Error(`insert returned no id (${e.fonte} ${titulo.slice(0, 80)})`);
+  return { id, created: true };
 }
 
 // upsertEditalRow returns null when edital should be skipped (orphan supplement, etc.)
