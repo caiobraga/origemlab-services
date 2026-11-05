@@ -15,6 +15,7 @@ import {
   normalizePrazoInscricaoFromText,
   reconcilePrazoInscricaoFromSources,
 } from "../../../../shared/editalPrazoSync.ts";
+import { isValorProjetoEstruturado } from "../../../../shared/editalValorExtract.ts";
 
 type FieldEvidence = {
   source: "topk" | "chunkscan" | "window" | "bulk";
@@ -718,7 +719,7 @@ function jsonExample(field: FieldKey): string {
 
 const FIELD_PRESENTATION_GUIDANCE: Record<FieldKey, string> = {
   valor_projeto:
-    "Valide e padronize o valor por projeto/bolsa/recursos. Preserve a unidade e a regra (por projeto, por bolsa, total, etc.).",
+    "Valide e padronize o valor POR PROJETO/proposta (teto ou faixa que cada proposta pode pedir) ou por bolsa. O orçamento total/global da chamada NÃO é valor por projeto: se o valor atual for só o total, mantenha-o identificado como \"total da chamada\" (ex.: \"R$ 10.000.000,00 (valor global da chamada)\") e nunca o apresente como teto por projeto.",
   prazo_inscricao:
     "Valide e padronize o(s) prazo(s) de inscrição/submissão. Se houver datas e horários, preserve. Se houver múltiplas janelas/etapas, resuma em uma string única clara.",
   localizacao:
@@ -837,6 +838,19 @@ async function validateOneEdital(
         field,
         report: { status: "skipped", reason: "before_is_null", before, after: before ?? null },
         finalValue: before ?? null,
+        auditedOk: true,
+        before,
+        dbUpdate: null,
+      };
+    }
+
+    // Formato estruturado (por projeto × total da chamada): números já conferidos com o texto na
+    // extração; a auditoria em texto livre desfazia a separação.
+    if (field === "valor_projeto" && isValorProjetoEstruturado(before)) {
+      return {
+        field,
+        report: { status: "skipped", reason: "valor_projeto_estruturado", before, after: before },
+        finalValue: before,
         auditedOk: true,
         before,
         dbUpdate: null,

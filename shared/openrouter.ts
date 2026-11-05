@@ -68,6 +68,12 @@ export type OpenRouterChatOptions = {
   maxTokens?: number;
   temperature?: number;
   timeoutMs?: number;
+  /**
+   * Qwen3 raciocina antes de responder e o raciocínio conta em `max_tokens`: com limites curtos
+   * (ex.: OLLAMA_NUM_PREDICT=384) a resposta volta vazia (`finish_reason: length`). O provedor ignora
+   * `reasoning.enabled=false`; o switch `/no_think` no prompt desliga o raciocínio. Só afeta modelos qwen3.
+   */
+  noThink?: boolean;
 };
 
 export async function openRouterChat(
@@ -86,7 +92,9 @@ export async function openRouterChat(
       headers: buildHeaders(cfg),
       body: JSON.stringify({
         model,
-        messages: [{ role: "user", content: prompt }],
+        messages: [
+          { role: "user", content: options.noThink && /qwen3/i.test(model) ? `${prompt}\n/no_think` : prompt },
+        ],
         temperature: options.temperature ?? 0.2,
         max_tokens: options.maxTokens ?? 700,
       }),

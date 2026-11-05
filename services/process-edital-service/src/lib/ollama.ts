@@ -207,6 +207,7 @@ export async function ollamaGenerate(prompt: string): Promise<string> {
             maxTokens: getOllamaNumPredict(),
             temperature: parseFloat(process.env.OLLAMA_TEMPERATURE || "0") || 0,
             timeoutMs: getOllamaGenerateTimeoutMs(),
+            noThink: true,
           }),
         { label: "openrouter generate", attempts: getOllamaGenerateRetries() },
       );

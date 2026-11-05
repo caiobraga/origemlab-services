@@ -141,6 +141,16 @@ export function extractBRLAmountsFromText(text: string): number[] {
     if (n) amounts.push(n);
   }
 
+  // "R$ 10 milhões", "R$ 1,5 milhão", "R$ 600 mil" (o padrão acima só pega o "10"/"600").
+  for (const m of s.matchAll(/(\d+(?:[.,]\d+)?)\s*(?:milhões|milhoes|milhão|milhao)\b/gi)) {
+    const base = parseBrazilianMoneyToken(m[1].replace(",", "."));
+    if (base) amounts.push(base * 1_000_000);
+  }
+  for (const m of s.matchAll(/(\d+(?:[.,]\d+)?)\s*mil\b/gi)) {
+    const base = parseBrazilianMoneyToken(m[1].replace(",", "."));
+    if (base) amounts.push(base * 1_000);
+  }
+
   for (const m of s.matchAll(/\(([^)]+)\)/g)) {
     const written = parseWrittenPortugueseMoneyPhrase(m[1]);
     if (written && !amounts.some((a) => amountsAreNear(a, written))) {
@@ -183,6 +193,14 @@ export function flattenValorProjetoLines(value: unknown): string[] {
   if (value == null) return [];
 
   const fromObject = (obj: Record<string, unknown>): string[] => {
+    const estruturado = parseValorProjetoEstruturado(obj);
+    if (estruturado) {
+      return [
+        ...estruturado.valor,
+        ...estruturado.bolsas,
+        ...(estruturado.total_programa_texto ? [estruturado.total_programa_texto] : []),
+      ];
+    }
     const items: string[] = [];
     const v = obj.valor;
     if (Array.isArray(v)) {
@@ -289,4 +307,269 @@ export function isPlausibleValorProjetoHeuristic(value: unknown, editalNumero?: 
   const lines = flattenValorProjetoLines(value);
   if (lines.length === 0) return false;
   return !isSuspiciousValorProjeto(value, editalNumero);
+}
+
+// ---------------------------------------------------------------------------
+// valor_projeto estruturado: valor por projeto × orçamento total da chamada
+// ---------------------------------------------------------------------------
+
+/**
+ * Formato gravado em `editais.valor_projeto` (string JSON) pela extração estruturada.
+ * `valor` só tem o valor elegível POR PROJETO/PROPOSTA (teto ou faixa); o orçamento global da
+ * chamada fica em `total_programa*` e nunca deve ser exibido como valor por projeto.
+ * A presença de `por_projeto_origem` marca o formato (linhas antigas só têm `{ valor: [...] }`).
+ */
+export type ValorProjetoEstruturado = {
+  valor: string[];
+  /** Valores por bolsa/beneficiário (ex.: "bolsa DTI R$ 3.000/mês"); não entram no teto por projeto. */
+  bolsas: string[];
+  por_projeto_min: number | null;
+  por_projeto_max: number | null;
+  /** "edital" = o texto define o valor por projeto; "projeto_unico" = total da chamada com 1 projeto apoiado. */
+  por_projeto_origem: "edital" | "projeto_unico" | null;
+  total_programa: number | null;
+  total_programa_texto: string | null;
+  qtd_projetos: number | null;
+};
+
+const TOTAL_PROGRAMA_RE =
+  /\b(global|total|totaliza\w*|dota[cç][aã]o|or[cç]amento|montante|capital comprometido|investimento|recursos?\s+(?:financeiros?\s+)?(?:totais|dispon[ií]ve(?:l|is)|destinados?|previstos?|alocados?))\b/i;
+const POR_PROJETO_RE =
+  /\b(?:por|cada|para cada)\s+(?:projeto|proposta|empresa|startup|benefici[aá]ri\w*|pesquisador\w*|bolsista|plano|iniciativa|institui[cç][aã]o|ict|grupo|evento|candidat\w*|subprojeto)|\bcada\b|\bindividua\w*/i;
+const MOEDA_ESTRANGEIRA_RE = /€|\beuros?\b|us\$|\busd\b|d[oó]lar|£|\blibras?\b/i;
+const FAIXA_MIN_RE = /m[ií]nimo|\bentre\b|\bde\s+r\$[^;]*?\ba\s+r\$/i;
+const MENSAL_RE = /\/\s*m[eê]s\b|\bmensa(?:l|is)\b|\bao\s+m[eê]s\b|\bpor\s+m[eê]s\b/i;
+
+/** Linha cita algum valor (R$, por extenso ou moeda estrangeira com número). */
+function valorLineHasAmount(line: string): boolean {
+  return extractBRLAmountsFromText(line).length > 0 || (MOEDA_ESTRANGEIRA_RE.test(line) && /\d/.test(line));
+}
+
+const ESTRUTURADO_LINE_MAX = 200;
+const ESTRUTURADO_LINES_MAX = 6;
+
+function cleanValorLine(raw: unknown, max = ESTRUTURADO_LINE_MAX): string | null {
+  if (raw == null) return null;
+  const t = String(raw).replace(/\s+/g, " ").trim();
+  if (!t || /^(null|n[aã]o informado)$/i.test(t)) return null;
+  return t.length > max ? `${t.slice(0, max - 1)}…` : t;
+}
+
+function toValorLines(raw: unknown): string[] {
+  const list = Array.isArray(raw) ? raw : raw == null ? [] : [raw];
+  const out: string[] = [];
+  for (const x of list) {
+    const v = x && typeof x === "object" && "valor" in (x as object) ? (x as { valor: unknown }).valor : x;
+    const t = typeof v === "string" || typeof v === "number" ? cleanValorLine(v) : null;
+    if (t && !out.includes(t)) out.push(t);
+  }
+  return out;
+}
+
+/** Valores em R$ (≥ R$ 100) de uma linha; linhas em moeda estrangeira não contam. */
+function brlAmountsOfLine(line: string): number[] {
+  if (MOEDA_ESTRANGEIRA_RE.test(line)) return [];
+  return extractBRLAmountsFromText(line).filter((n) => n >= 100);
+}
+
+function toPositiveNumber(raw: unknown): number | null {
+  if (typeof raw === "number") return Number.isFinite(raw) && raw > 0 ? raw : null;
+  if (typeof raw === "string") {
+    const fromText = brlAmountsOfLine(raw);
+    if (fromText.length) return Math.max(...fromText);
+    const n = parseBrazilianMoneyToken(raw.replace(/[^\d.,]/g, ""));
+    return n && n > 0 ? n : null;
+  }
+  return null;
+}
+
+function toQtdProjetos(raw: unknown): number | null {
+  const n = typeof raw === "number" ? raw : typeof raw === "string" ? Number.parseInt(raw.replace(/\D/g, ""), 10) : NaN;
+  return Number.isInteger(n) && n > 0 && n <= 100_000 ? n : null;
+}
+
+function formatBRL(n: number): string {
+  return new Intl.NumberFormat("pt-BR", { style: "currency", currency: "BRL", maximumFractionDigits: 2 }).format(n);
+}
+
+/** Lê o formato estruturado já gravado (string JSON ou objeto); `null` para formato antigo/texto. */
+export function parseValorProjetoEstruturado(value: unknown): ValorProjetoEstruturado | null {
+  let obj: Record<string, unknown> | null = null;
+  if (typeof value === "string") {
+    const t = value.trim();
+    obj = t.startsWith("{") ? safeParseJsonObject(t) : null;
+  } else if (value && typeof value === "object" && !Array.isArray(value)) {
+    obj = value as Record<string, unknown>;
+  }
+  if (!obj || !("por_projeto_origem" in obj)) return null;
+  const origem = obj.por_projeto_origem;
+  return {
+    valor: toValorLines(obj.valor),
+    bolsas: toValorLines(obj.bolsas),
+    por_projeto_min: typeof obj.por_projeto_min === "number" ? obj.por_projeto_min : null,
+    por_projeto_max: typeof obj.por_projeto_max === "number" ? obj.por_projeto_max : null,
+    por_projeto_origem: origem === "edital" || origem === "projeto_unico" ? origem : null,
+    total_programa: typeof obj.total_programa === "number" ? obj.total_programa : null,
+    total_programa_texto: cleanValorLine(obj.total_programa_texto),
+    qtd_projetos: toQtdProjetos(obj.qtd_projetos),
+  };
+}
+
+export function isValorProjetoEstruturado(value: unknown): boolean {
+  return parseValorProjetoEstruturado(value) != null;
+}
+
+/** Há valor por projeto (ou por bolsa) — e não só o orçamento total da chamada. Formato antigo conta como sim. */
+export function valorProjetoTemPorProjeto(value: unknown): boolean {
+  const e = parseValorProjetoEstruturado(value);
+  if (!e) return flattenValorProjetoLines(value).length > 0;
+  return e.valor.length > 0 || e.bolsas.length > 0;
+}
+
+/**
+ * Converte a resposta do modelo (`{por_projeto, por_projeto_min, total_programa, qtd_projetos, bolsas}`
+ * ou o formato antigo `{valor:[...]}`) no formato estruturado gravado.
+ * - Com `contextText`, descarta linhas/valores cujos números em R$ não aparecem no contexto.
+ * - Linhas de "valor por projeto" que falam de total/global/dotação (sem "por projeto"/"cada")
+ *   são movidas para o total da chamada.
+ * - Só total + 1 projeto apoiado ⇒ o total é o valor do projeto (`por_projeto_origem: "projeto_unico"`).
+ *   Com mais projetos, o valor por projeto não é derivado (seria média, não teto).
+ */
+export function normalizeValorProjetoEstruturado(
+  raw: unknown,
+  opts: { contextText?: string } = {},
+): ValorProjetoEstruturado | null {
+  const stored = parseValorProjetoEstruturado(raw);
+  if (stored) return stored;
+
+  let obj: Record<string, unknown> | null = null;
+  if (typeof raw === "string") {
+    const t = raw.trim();
+    if (!t) return null;
+    obj = t.startsWith("{") ? safeParseJsonObject(t) : { por_projeto: extractValorLinesForStorage(t) };
+  } else if (raw && typeof raw === "object" && !Array.isArray(raw)) {
+    obj = raw as Record<string, unknown>;
+  } else if (Array.isArray(raw)) {
+    obj = { por_projeto: raw };
+  }
+  if (!obj) return null;
+
+  let linhas = toValorLines(obj.por_projeto ?? obj.valor);
+  let bolsas = toValorLines(obj.bolsas);
+  let totalTexto =
+    cleanValorLine(obj.total_programa_texto) ??
+    (typeof obj.total_programa === "string" ? cleanValorLine(obj.total_programa) : null);
+  const qtd = toQtdProjetos(obj.qtd_projetos);
+
+  const ctx = String(opts.contextText || "");
+  const ctxAmounts = ctx.trim() ? extractBRLAmountsFromText(ctx) : null;
+  const inContext = (n: number) => !ctxAmounts || ctxAmounts.some((c) => amountsAreNear(c, n));
+  const lineSupported = (l: string) => {
+    const nums = brlAmountsOfLine(l);
+    return nums.length === 0 || nums.some(inContext);
+  };
+  linhas = linhas.filter(lineSupported);
+  bolsas = bolsas.filter(lineSupported);
+
+  // Valor mensal (bolsa/mensalidade) não é teto por projeto; e bolsa sem valor não informa nada.
+  const mensais = linhas.filter((l) => MENSAL_RE.test(l));
+  if (mensais.length) {
+    linhas = linhas.filter((l) => !mensais.includes(l));
+    bolsas = [...bolsas, ...mensais.filter((l) => !bolsas.includes(l))];
+  }
+  bolsas = bolsas.filter((l) => valorLineHasAmount(l));
+
+  // O modelo às vezes repete a bolsa sem rótulo ("R$ 3.900,00") em por_projeto ou duas vezes em bolsas.
+  const repeteValores = (l: string, ref: string[]) => {
+    const nums = brlAmountsOfLine(l);
+    const refNums = ref.flatMap(brlAmountsOfLine);
+    return nums.length > 0 && nums.every((n) => refNums.some((r) => amountsAreNear(r, n)));
+  };
+  linhas = linhas.filter((l) => !repeteValores(l, bolsas));
+  bolsas = bolsas.filter((l, i) => !repeteValores(l, bolsas.slice(0, i)));
+  if (totalTexto && !lineSupported(totalTexto)) totalTexto = null;
+
+  // Linhas "por projeto" que na verdade descrevem o orçamento global da chamada.
+  const movidas = linhas.filter((l) => TOTAL_PROGRAMA_RE.test(l) && !POR_PROJETO_RE.test(l));
+  if (movidas.length) {
+    linhas = linhas.filter((l) => !movidas.includes(l));
+    totalTexto ??= movidas[0]!;
+  }
+
+  let total: number | null = null;
+  if (totalTexto) {
+    const nums = brlAmountsOfLine(totalTexto);
+    if (nums.length) total = Math.max(...nums);
+  } else if (typeof obj.total_programa === "number" && inContext(obj.total_programa)) {
+    total = obj.total_programa;
+    totalTexto = formatBRL(total);
+  }
+
+  let perAmounts = linhas.flatMap(brlAmountsOfLine);
+  if (total != null && perAmounts.some((n) => !amountsAreNear(n, total!))) {
+    // Ex.: "R$ 150.000,00 cada, totalizando R$ 300.000,00" — o total não é teto por projeto.
+    perAmounts = perAmounts.filter((n) => !amountsAreNear(n, total!));
+  } else if (total != null && perAmounts.length > 0 && qtd !== 1) {
+    // Valor "por projeto" == total sem o edital dizer que apoia 1 projeto: o modelo repetiu o total.
+    linhas = [];
+    perAmounts = [];
+  }
+
+  let max = perAmounts.length ? Math.max(...perAmounts) : null;
+  let min: number | null = null;
+  const llmMin = toPositiveNumber(obj.por_projeto_min);
+  if (llmMin != null && max != null && llmMin < max && inContext(llmMin)) min = llmMin;
+  else if (perAmounts.length >= 2 && linhas.some((l) => FAIXA_MIN_RE.test(l))) min = Math.min(...perAmounts);
+  if (max == null && perAmounts.length === 0 && linhas.some((l) => !MOEDA_ESTRANGEIRA_RE.test(l))) {
+    const llmMax = toPositiveNumber(obj.por_projeto_max);
+    if (llmMax != null && inContext(llmMax)) max = llmMax;
+  }
+
+  // Total menor que o teto por projeto é incoerente (parcela de um financiador, leitura errada): descarta.
+  if (total != null && max != null && total < max) {
+    total = null;
+    totalTexto = null;
+  }
+
+  let origem: ValorProjetoEstruturado["por_projeto_origem"] = linhas.length ? "edital" : null;
+  if (!linhas.length && total != null && qtd === 1) {
+    linhas = [`até ${formatBRL(total)} (projeto único apoiado pela chamada)`];
+    max = total;
+    origem = "projeto_unico";
+  }
+
+  if (!linhas.length && !bolsas.length && !totalTexto) return null;
+  return {
+    valor: linhas.slice(0, ESTRUTURADO_LINES_MAX),
+    bolsas: bolsas.slice(0, ESTRUTURADO_LINES_MAX),
+    por_projeto_min: min,
+    por_projeto_max: max,
+    por_projeto_origem: origem,
+    total_programa: total,
+    total_programa_texto: totalTexto,
+    qtd_projetos: qtd,
+  };
+}
+
+/** Completa `a` com o que só `b` tem (ex.: um lote trouxe o total, outro o teto por projeto). */
+export function mergeValorProjetoEstruturado(
+  a: ValorProjetoEstruturado,
+  b: ValorProjetoEstruturado,
+): ValorProjetoEstruturado {
+  const porProjeto = a.valor.length ? a : b.valor.length ? b : a;
+  const totalSrc = a.total_programa_texto ? a : b;
+  return {
+    valor: porProjeto.valor,
+    bolsas: [...new Set([...a.bolsas, ...b.bolsas])].slice(0, ESTRUTURADO_LINES_MAX),
+    por_projeto_min: porProjeto.por_projeto_min,
+    por_projeto_max: porProjeto.por_projeto_max,
+    por_projeto_origem: porProjeto.por_projeto_origem,
+    total_programa: totalSrc.total_programa,
+    total_programa_texto: totalSrc.total_programa_texto,
+    qtd_projetos: a.qtd_projetos ?? b.qtd_projetos,
+  };
+}
+
+export function serializeValorProjetoEstruturado(e: ValorProjetoEstruturado): string {
+  return JSON.stringify(e);
 }

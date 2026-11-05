@@ -25,6 +25,11 @@ import {
 import {
   extractValorLinesForStorage,
   isPlausibleValorProjetoHeuristic,
+  mergeValorProjetoEstruturado,
+  normalizeValorProjetoEstruturado,
+  parseValorProjetoEstruturado,
+  serializeValorProjetoEstruturado,
+  valorProjetoTemPorProjeto,
 } from "../../../../shared/editalValorExtract.ts";
 import { isValorProjetoAcceptable } from "../lib/valorProjetoValidate.ts";
 import { stripEchoedPromptHeader } from "../lib/promptEcho";
@@ -82,9 +87,22 @@ const VALOR_JSON_STORE_MAX = 1400;
 const VALOR_LINE_MAX = 240;
 const VALOR_ITEMS_MAX = 8;
 
-/** Compacta valor_projeto para string JSON curta (evita parágrafos enormes no banco/UI). */
-function normalizeValorProjetoForStorage(raw: unknown): string | null {
+/**
+ * Compacta valor_projeto para string JSON curta (evita parágrafos enormes no banco/UI).
+ * Resposta nova do modelo (`fromLlm`) vira o formato estruturado (por projeto × total da chamada);
+ * valores já gravados no formato antigo `{valor:[...]}` seguem como estão.
+ */
+function normalizeValorProjetoForStorage(
+  raw: unknown,
+  opts: { fromLlm?: boolean; contextText?: string } = {},
+): string | null {
   if (raw == null) return null;
+
+  const stored = parseValorProjetoEstruturado(raw);
+  if (stored || opts.fromLlm) {
+    const e = stored ?? normalizeValorProjetoEstruturado(raw, { contextText: opts.contextText });
+    return e ? serializeValorProjetoEstruturado(e) : null;
+  }
 
   const pushLine = (items: string[], line: string) => {
     const t = String(line || "").replace(/\s+/g, " ").trim();
@@ -136,6 +154,14 @@ function normalizeValorProjetoForStorage(raw: unknown): string | null {
     out = JSON.stringify({ valor: shorter }).slice(0, VALOR_JSON_STORE_MAX);
   }
   return out;
+}
+
+/** Junta dois valor_projeto estruturados (string JSON); o primeiro tem prioridade. */
+function mergeValorProjetoValues(primary: unknown, extra: unknown): unknown {
+  const a = parseValorProjetoEstruturado(primary);
+  const b = parseValorProjetoEstruturado(extra);
+  if (!a || !b) return primary;
+  return serializeValorProjetoEstruturado(mergeValorProjetoEstruturado(a, b));
 }
 
 function isNullishExtractedText(value: unknown): boolean {
@@ -395,7 +421,7 @@ function extractJsonBlock(s: string): string {
 function promptForField(field: FieldKey, edital: Pick<EditalInfo, "numero" | "titulo" | "fonte">): string {
   const ex =
     field === "valor_projeto"
-      ? `{\"valor_projeto\":{\"valor\":[\"até R$ 500.000\",\"bolsa R$ 3.000/mês\"]}} ou {\"valor_projeto\":null}`
+      ? `{\"valor_projeto\":{\"por_projeto\":[\"até R$ 500.000,00 por proposta\"],\"por_projeto_min\":null,\"por_projeto_max\":500000,\"total_programa\":\"R$ 10.000.000,00 (valor global da chamada)\",\"qtd_projetos\":20,\"bolsas\":[\"bolsa DTI-A R$ 3.000,00/mês\"]}} ou {\"valor_projeto\":null}`
       : fieldType(field) === "json"
       ? `{\"${field}\":{\"fases\":[{\"nome\":\"Inscrição\",\"prazo\":\"...\",\"status\":\"aberto|fechado|pendente\",\"data_inicio\":\"YYYY-MM-DD\",\"data_fim\":\"YYYY-MM-DD\"}]}} ou {\"${field}\":null}`
       : fieldType(field) === "boolean"
@@ -420,8 +446,15 @@ function promptForField(field: FieldKey, edital: Pick<EditalInfo, "numero" | "ti
     "- Não inclua quebras de linha fora do JSON",
     ...(field === "valor_projeto"
       ? [
-          "- valor_projeto: lista curta em \"valor\" (máx. 6 itens, cada um até ~120 caracteres); só valores/tetos/bolsas com evidência no texto",
-          "- NÃO use número de edital/chamada (ex. \"046/2026\", \"00001946/2026\") como valor_projeto",
+          "- Separe o valor POR PROJETO do valor TOTAL do edital. São coisas diferentes:",
+          "  • por_projeto: quanto CADA proposta/projeto/empresa pode pedir (teto, \"até R$ X por proposta\", \"valor máximo por projeto\", faixas/linhas/modalidades com seus tetos). Lista curta (máx. 6 itens, até ~120 caracteres cada), com o R$ como está no texto.",
+          "  • por_projeto_min / por_projeto_max: números em reais (sem R$, sem pontos) do menor e do maior valor por projeto; null se não houver.",
+          "  • total_programa: o orçamento global da chamada (\"valor global\", \"recursos totais\", \"dotação orçamentária\", \"serão destinados R$ X para esta chamada\", \"montante total\"). Texto curto com o R$. NUNCA coloque esse valor em por_projeto.",
+          "  • qtd_projetos: número de projetos/propostas que serão apoiados, se o texto disser (inteiro); senão null.",
+          "  • bolsas: valor de CADA bolsa (ex.: \"bolsa DTI-A R$ 3.000,00/mês\"), se houver. Limites de rubrica do orçamento do projeto não são bolsas.",
+          "- Se o texto só informar o total da chamada, deixe por_projeto vazio ([]) e preencha total_programa. Não divida o total pelo número de projetos.",
+          "- Use null/[] para o que não estiver no texto. Não invente valores.",
+          "- NÃO use número de edital/chamada (ex. \"046/2026\", \"00001946/2026\") como valor",
           "- Não copie parágrafos inteiros do edital",
         ]
       : []),
@@ -1218,13 +1251,34 @@ async function tryFullDocumentChunkScan(
   };
 }
 
+const VALOR_COM_NUMERO_RE = /R\$\s*\d/i;
+const VALOR_POR_PROJETO_RE =
+  /\b(?:por|cada|para cada)\s+(?:proposta|projeto|empresa|plano)|\bvalor\s+(?:m[aá]ximo|m[ií]nimo|global|total)|\bteto\b|\brecursos?\s+(?:financeiros?\s+)?(?:destinad|dispon[ií]ve|previst|or[cç]ad)/i;
+
+/**
+ * Reforço lexical somado ao cosseno. Para valor_projeto, o embedding costuma preferir o modelo de
+ * "Quadro de desembolsos / Valor (R$)" (sem números) aos trechos com "até R$ X por proposta" e o valor
+ * global — e o contexto só comporta poucos chunks.
+ */
+function fieldLexicalBonus(field: FieldKey | undefined, row: any): number {
+  if (field !== "valor_projeto") return 0;
+  const c = String(row?.content || "");
+  if (!VALOR_COM_NUMERO_RE.test(c)) return 0;
+  return VALOR_POR_PROJETO_RE.test(c) ? 0.3 : 0.15;
+}
+
 /** Ranqueia chunks por cosseno (mesma lógica do top-k único). */
-function rankRowsByQueryEmbedding(rows: any[], queryEmbedding: number[], k: number): Array<{ r: any; score: number }> {
+function rankRowsByQueryEmbedding(
+  rows: any[],
+  queryEmbedding: number[],
+  k: number,
+  field?: FieldKey,
+): Array<{ r: any; score: number }> {
   const scored = rows
     .map((r) => {
       const emb = embeddingVectorForTopKCompare(r);
       if (!emb) return null;
-      return { r, score: cosineSimilarity(queryEmbedding, emb) };
+      return { r, score: cosineSimilarity(queryEmbedding, emb) + fieldLexicalBonus(field, r) };
     })
     .filter(Boolean) as Array<{ r: any; score: number }>;
   scored.sort((a, b) => b.score - a.score);
@@ -1250,7 +1304,7 @@ async function tryTopKInBatches(
   timedOut: boolean;
 } | null> {
   const { chunksPerBatch, maxCharsPerBatch, maxBatches } = topKBatchConfig();
-  const ranked = rankRowsByQueryEmbedding(rowsEmb, queryEmbedding, kOverride);
+  const ranked = rankRowsByQueryEmbedding(rowsEmb, queryEmbedding, kOverride, field);
   if (ranked.length === 0) return null;
 
   let lastEx: { value: any; rawJson: string; modelOutput: string } = {
@@ -1259,6 +1313,12 @@ async function tryTopKInBatches(
     modelOutput: "",
   };
   let timedOut = false;
+  let valorProjetoTotalOnly: {
+    value: any;
+    rawJson: string;
+    modelOutput: string;
+    evidence: FieldEvidence;
+  } | null = null;
 
   const totalBatches = Math.min(maxBatches, Math.ceil(ranked.length / chunksPerBatch));
   for (let b = 0; b < totalBatches; b++) {
@@ -1289,20 +1349,32 @@ async function tryTopKInBatches(
     lastEx = ex;
     if (extractionValueIsUseful(field, ex.value)) {
       const rowsUsed = slice.map((s) => s.r);
-      return {
+      const found = {
         value: ex.value,
         rawJson: ex.rawJson,
         modelOutput: ex.modelOutput,
         evidence: {
-          source: "topk",
+          source: "topk" as const,
           snippet: snippetFromContext(text),
           ...docIdsEvidenceFields(documentIdsFromRows(rowsUsed)),
         },
         lastEx,
         timedOut: false,
       };
+      // Lote só com o total da chamada: guarda e segue procurando o valor por projeto nos próximos.
+      if (field === "valor_projeto") {
+        const merged: unknown = valorProjetoTotalOnly ? mergeValorProjetoValues(found.value, valorProjetoTotalOnly.value) : found.value;
+        if (!valorProjetoTemPorProjeto(merged)) {
+          valorProjetoTotalOnly = { ...(valorProjetoTotalOnly ?? found), value: merged };
+          continue;
+        }
+        return { ...found, value: merged };
+      }
+      return found;
     }
   }
+
+  if (valorProjetoTotalOnly) return { ...valorProjetoTotalOnly, lastEx, timedOut };
 
   return {
     value: null,
@@ -1475,7 +1547,7 @@ function buildFieldQuery(field: FieldKey, edital: Pick<EditalInfo, "numero" | "t
   const base = `Edital: ${edital.numero || "N/A"} — ${edital.titulo} (${edital.fonte || "N/A"})`;
   const common = "Tarefa: recupere trechos do edital mais relevantes para responder com evidência.";
   const hints: Record<FieldKey, string> = {
-    valor_projeto: "Foco: orçamento, recursos, valor máximo/mínimo, teto, dotação, R$, bolsas, financiamento, contrapartida, desembolso.",
+    valor_projeto: "Foco: valor máximo/mínimo por proposta ou por projeto, teto por projeto, faixas de apoio, número de projetos apoiados, valor global/total da chamada, dotação, R$, bolsas, contrapartida.",
     prazo_inscricao: "Foco: prazos e datas de inscrição/submissão, encerramento, cronograma, datas DD/MM/AAAA, YYYY-MM-DD, 'até', 'prazo'.",
     localizacao: "Foco: abrangência, local/estado/município, elegibilidade por território, sede, execução do projeto.",
     vagas: "Foco: número de vagas/bolsas, quantitativo, beneficiários, seleção, cadastro de reserva.",
@@ -1580,7 +1652,7 @@ function buildTopKContext(
     .map((r) => {
       const emb = embeddingVectorForTopKCompare(r);
       if (!emb) return null;
-      return { r, score: cosineSimilarity(queryEmbedding, emb) };
+      return { r, score: cosineSimilarity(queryEmbedding, emb) + fieldLexicalBonus(label as FieldKey, r) };
     })
     .filter(Boolean) as Array<{ r: any; score: number }>;
 
@@ -1730,10 +1802,10 @@ async function extractFieldValue(
       return { value: normalized, rawJson, modelOutput };
     }
     if (field === "valor_projeto") {
-      const normalized =
-        normalizeValorProjetoForStorage(
-          typeof value === "object" && value !== null ? value : typeof value === "string" ? value : null,
-        );
+      const normalized = normalizeValorProjetoForStorage(
+        typeof value === "object" && value !== null ? value : typeof value === "string" ? value : null,
+        { fromLlm: true, contextText: ctx },
+      );
       if (!normalized) return { value: null, rawJson, modelOutput };
       const acceptable = await isValorProjetoAcceptable(normalized, { editalNumero: edital.numero });
       if (!acceptable) {
@@ -2193,6 +2265,47 @@ async function processOneEdital(
     await notifyProcessFailure(edital, e);
     return { status: "fail", errorMessage: e instanceof Error ? e.message : String(e) };
   }
+}
+
+/**
+ * Reextrai só `valor_projeto` de um edital com o mesmo caminho do batch (top-k → varredura), sem gravar.
+ * Usado por `scripts/reextract-valor-projeto.ts` para comparar antes/depois e reprocessar editais antigos.
+ */
+export async function extractValorProjetoForEdital(
+  editalId: string,
+): Promise<{
+  edital: EditalInfo;
+  value: string | null;
+  evidence: FieldEvidence | null;
+  modelOutput: string;
+  status: "ok" | "sem_documentos" | "nao_encontrado";
+}> {
+  await initOllamaBaseUrl();
+  const supabase = createSupabase();
+  const { data, error } = await supabase.from("editais").select(EDITAIS_PROCESS_SELECT).eq("id", editalId).maybeSingle();
+  if (error) throw new Error(`Erro ao buscar edital: ${error.message}`);
+  if (!data) throw new Error(`Edital ${editalId} não encontrado`);
+  const edital = data as unknown as EditalInfo;
+
+  const fileIds = await fetchEditalPdfKeys(supabase, edital.id);
+  const ctxAll = await fetchDocumentsContextByEdital(supabase, edital.id, fileIds);
+  const rows = await fetchDocumentsRows(supabase, { editalId: edital.id, fileIds });
+  const rowsAll = await fetchDocumentsRowsAllWithContent(supabase, { editalId: edital.id, fileIds });
+  if (buildPlainFullText(rowsAll).length === 0 && !hasNonEmptyContextText(ctxAll.text) && rows.length === 0) {
+    return { edital, value: null, evidence: null, modelOutput: "", status: "sem_documentos" };
+  }
+
+  const out = await extractFieldWithTopKThenWindows("valor_projeto", edital, rows, rowsAll, rows.length, ctxAll);
+  const value = extractionValueIsUseful("valor_projeto", out.value, edital.numero)
+    ? normalizeValorProjetoForStorage(out.value)
+    : null;
+  return {
+    edital,
+    value,
+    evidence: value ? out.evidence : null,
+    modelOutput: out.modelOutput,
+    status: value ? "ok" : "nao_encontrado",
+  };
 }
 
 export async function runProcessBatch(): Promise<{ hadWork: boolean; processedIds: string[] }> {
