@@ -1,9 +1,15 @@
+import * as cheerio from "cheerio";
+import { fetchHtml, absoluteUrl, normalizeSpaces, extractNumeroFromText } from "./simplePdfPageScrape.mjs";
 import { filterEditaisCurrentYear } from "./yearFilter.mjs";
 import { buildEditalTitulo } from "./scraperTitleUtils.mjs";
-import { withPuppeteerPage, gotoPage } from "./puppeteerHtml.mjs";
+import { resolvePdfFetchUrl } from "./pdfUrlResolve.mjs";
 
+/**
+ * memoria2.cnpq.br is often blocked (ERR_BLOCKED_BY_CLIENT / Liferay).
+ * Prefer the public gov.br listing (static HTML works).
+ */
 const DEFAULT_LIST_URL =
-  process.env.CNPQ_CHAMADAS_URL || "https://memoria2.cnpq.br/web/guest/chamadas-publicas";
+  process.env.CNPQ_CHAMADAS_URL || "https://www.gov.br/cnpq/pt-br/chamadas/abertas-para-submissao";
 
 function mapRow(r) {
   const numero = r.numero || undefined;
@@ -21,102 +27,97 @@ function mapRow(r) {
   };
 }
 
+function extractNumeroFromTitle(titulo) {
+  const t = String(titulo || "");
+  const m =
+    t.match(/N[º°]?\s*(\d+)\s*\/\s*(\d{4})/i) ||
+    t.match(/Chamada[^\d]*(\d+)\s*\/\s*(\d{4})/i) ||
+    t.match(/(\d{1,3})\s*\/\s*(20\d{2})/);
+  return m ? `${m[1]}/${m[2]}` : extractNumeroFromText(t) || undefined;
+}
+
+function isCnpqChamadaLink(abs, text) {
+  try {
+    const u = new URL(abs);
+    if (!u.hostname.includes("gov.br") && !u.hostname.includes("cnpq.br")) return false;
+    if (/\.pdf($|\?)/i.test(u.pathname)) return false;
+    if (!/\/chamadas\//i.test(u.pathname)) return false;
+    if (/abertas-para-submissao|analise-em-andamento|todas-as-chamadas\/?$/i.test(u.pathname)) return false;
+    if (/busca_|compartilh|facebook|twitter|linkedin|whatsapp|resultado/i.test(abs)) return false;
+    const t = String(text || "");
+    return /chamada|edital/i.test(t) || /chamada-no-|chamada-publica|chamadas-20\d{2}/i.test(u.pathname);
+  } catch {
+    return false;
+  }
+}
+
+async function enrichDetail(link, timeoutMs = 25000) {
+  try {
+    const html = await fetchHtml(link, timeoutMs);
+    const $ = cheerio.load(html);
+    const pdfUrls = [];
+    $("a[href]").each((_, el) => {
+      const href = String($(el).attr("href") || "").trim();
+      if (!href) return;
+      const abs = absoluteUrl(href, link);
+      if (!abs) return;
+      const lower = abs.toLowerCase();
+      if (!lower.includes(".pdf")) return;
+      if (/carta-de-servicos|compartilh|facebook/i.test(lower)) return;
+      pdfUrls.push(resolvePdfFetchUrl(abs));
+    });
+    const text = normalizeSpaces($("main, #content, .documentFirstHeading, body").text());
+    const dates = text.match(/\d{2}\/\d{2}\/\d{4}/g) || [];
+    const unique = [...new Set(dates)];
+    // Descrição só do conteúdo: sem scripts, <noscript> (vaza HTML do GTM), navegação e bloco de compartilhar.
+    $("script, style, noscript, iframe, nav, header, footer, .social-links, .viewlet-below-content").remove();
+    const root = ["main", "#content", "body"].map((s) => $(s).first()).find((el) => el.length);
+    return {
+      pdfUrls: [...new Set(pdfUrls)],
+      dataPublicacao: unique[0],
+      dataEncerramento: unique.length > 1 ? unique[unique.length - 1] : unique[0],
+      descricao: normalizeSpaces(root.text()).slice(0, 800) || undefined,
+    };
+  } catch {
+    return { pdfUrls: [], dataPublicacao: undefined, dataEncerramento: undefined };
+  }
+}
+
 export async function scrapeCnpqCurrentYear() {
   const listUrl = DEFAULT_LIST_URL;
   const maxItems = Number(process.env.CNPQ_MAX_ITEMS || "100") || 100;
+  const maxDetail = Number(process.env.CNPQ_MAX_DETAIL || "40") || 40;
 
-  const rows = await withPuppeteerPage(async (page) => {
-    await gotoPage(page, listUrl, { waitMs: 5000, timeoutMs: 90000 });
+  const html = await fetchHtml(listUrl, 60000);
+  const $ = cheerio.load(html);
+  const byLink = new Map();
 
-    return page.evaluate((baseUrl, limit) => {
-      const editais = [];
-      const processedTitles = new Set();
-
-      document.querySelectorAll("li").forEach((listItem) => {
-        if (editais.length >= limit) return;
-        const titleElement = listItem.querySelector("h1, h2, h3, h4, h5, h6, .title, [class*='title']");
-        if (!titleElement) return;
-        const headingText = (titleElement.textContent || "").trim().replace(/\s+/g, " ");
-        if (!headingText.match(/N[º°]?\s*\d+\/\d+/i) && !/chamada/i.test(headingText)) return;
-        if (processedTitles.has(headingText)) return;
-        processedTitles.add(headingText);
-
-        const contentText = (listItem.textContent || "").replace(/\s+/g, " ");
-        const numeroMatch =
-          headingText.match(/N[º°]?\s*(\d+\/\d+)/i) ||
-          headingText.match(/Chamada\s+(?:Pública\s+)?(?:CNPq\s*)?N[º°]?\s*(\d+\/\d+)/i) ||
-          headingText.match(/(\d+\/\d+)/);
-        const numero = numeroMatch ? numeroMatch[1] : undefined;
-
-        const dates = contentText.match(/\d{2}\/\d{2}\/\d{4}/g) || [];
-        const uniqueDates = [...new Set(dates)];
-
-        const pdfUrls = [];
-        const seenPdf = new Set();
-        listItem.querySelectorAll("a[href]").forEach((link) => {
-          const href = link.href || link.getAttribute("href") || "";
-          if (!href || href.startsWith("javascript:")) return;
-          const lower = href.toLowerCase();
-          if (
-            lower.includes("facebook") ||
-            lower.includes("twitter") ||
-            lower.includes("whatsapp") ||
-            lower.includes("mailto:")
-          )
-            return;
-          let full;
-          try {
-            full = href.startsWith("http") ? href : new URL(href, baseUrl).href;
-          } catch {
-            return;
-          }
-          if (
-            !full.includes(".pdf") &&
-            !full.includes("/documents/") &&
-            !full.includes("/Media/")
-          )
-            return;
-          const norm = full.split("#")[0].toLowerCase();
-          if (seenPdf.has(norm)) return;
-          seenPdf.add(norm);
-          pdfUrls.push(full);
-        });
-
-        const validLinks = [];
-        listItem.querySelectorAll("a[href]").forEach((link) => {
-          const href = link.href || "";
-          if (!href || href.includes("javascript:")) return;
-          try {
-            const full = href.startsWith("http") ? href : new URL(href, baseUrl).href;
-            if (
-              (full.includes("cnpq.br") || full.includes("memoria2.cnpq.br") || full.includes("chamadas")) &&
-              !full.endsWith("#")
-            ) {
-              validLinks.push({ href: full, text: (link.textContent || "").toLowerCase().trim() });
-            }
-          } catch {
-            // ignore
-          }
-        });
-        const chamadaLink = validLinks.find(
-          (l) => l.text === "chamada" || l.text.includes("link permanente") || l.text.includes("chamada"),
-        );
-        const link = chamadaLink?.href || validLinks[0]?.href || listUrl;
-
-        editais.push({
-          titulo: headingText.slice(0, 400),
-          numero,
-          descricao: contentText.replace(headingText, "").trim().slice(0, 800) || undefined,
-          dataPublicacao: uniqueDates[0],
-          dataEncerramento: uniqueDates.length > 1 ? uniqueDates[uniqueDates.length - 1] : uniqueDates[0],
-          link,
-          pdfUrls,
-        });
-      });
-
-      return editais;
-    }, listUrl, maxItems);
+  $("a[href]").each((_, el) => {
+    const href = String($(el).attr("href") || "").trim();
+    const text = normalizeSpaces($(el).text());
+    const abs = absoluteUrl(href, listUrl);
+    if (!abs || !isCnpqChamadaLink(abs, text)) return;
+    if (text.length < 12) return;
+    if (byLink.has(abs)) return;
+    byLink.set(abs, {
+      titulo: text.slice(0, 400),
+      numero: extractNumeroFromTitle(text),
+      link: abs,
+      pdfUrls: [],
+    });
   });
+
+  const rows = [...byLink.values()].slice(0, maxItems);
+  const detailN = Math.min(maxDetail, rows.length);
+  for (let i = 0; i < detailN; i++) {
+    const row = rows[i];
+    const extra = await enrichDetail(row.link);
+    row.pdfUrls = [...new Set([...(row.pdfUrls || []), ...extra.pdfUrls])];
+    row.dataPublicacao = extra.dataPublicacao;
+    row.dataEncerramento = extra.dataEncerramento;
+    if (extra.descricao) row.descricao = extra.descricao;
+    if (i + 1 < detailN) await new Promise((r) => setTimeout(r, 200));
+  }
 
   return filterEditaisCurrentYear(rows.map(mapRow));
 }

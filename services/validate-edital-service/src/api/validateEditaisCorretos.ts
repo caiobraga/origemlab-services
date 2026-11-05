@@ -8,6 +8,7 @@ import { isOllamaServerCrash } from "../lib/fetchError";
 import { getMaxAuditContextChars, isOllamaTimeout, ollamaGenerate } from "../lib/ollama";
 import { initOllamaBaseUrl } from "../lib/ollamaResolve";
 import { mapPool, readConcurrencyEnv } from "../lib/concurrency.js";
+import { stripEchoedPromptHeader } from "../lib/promptEcho";
 import {
   editalHasActiveDeadline,
   isPrazoInscricaoMissing,
@@ -453,6 +454,7 @@ function makeAuditPrompt(
     '- "replace": há informação melhor no documento — preencha o campo com o melhor valor suportado.',
     '- "reject": não há suporte no documento — use null no campo.',
     "Não invente dados que não apareçam no documento.",
+    "As linhas Edital/Fonte/Campo abaixo são só contexto: nunca as repita dentro do valor do campo.",
     "",
     `Edital: ${edital.numero || "N/A"} — ${edital.titulo}`,
     `Fonte: ${edital.fonte}`,
@@ -622,19 +624,21 @@ async function polishFreeTextField(
     "Preserve números, datas, valores monetários e nomes próprios exatamente quando forem factuais no texto original.",
     "Não acrescente fatos novos. Se já estiver claro, devolva com ajustes mínimos de gramática e pontuação.",
     "",
+    "Contexto (apenas referência — NÃO copie estas linhas na resposta):",
     `Edital: ${edital.numero || "N/A"} — ${edital.titulo} (${edital.fonte || "N/A"})`,
     `Campo: ${field}`,
     "",
-    "Texto:",
+    "Texto a revisar:",
     text,
     "",
-    'Responda APENAS JSON válido: {"text":"..."}',
+    'Responda APENAS JSON válido: {"text":"..."}, onde "text" contém somente o texto revisado,',
+    'sem repetir "Edital:", "Campo:", "Texto:" nem o título do edital.',
   ].join("\n");
 
   const rawText = extractJsonBlock(await ollamaGenerate(prompt));
   const json = safeJsonParse(rawText);
   const out = json && typeof json === "object" && typeof (json as any).text === "string" ? String((json as any).text) : "";
-  const trimmed = out.replace(/\s+/g, " ").trim();
+  const trimmed = stripEchoedPromptHeader(out.replace(/\s+/g, " ").trim(), edital);
   if (!trimmed) return { text, raw: rawText };
   return { text: trimmed, raw: rawText };
 }
@@ -664,7 +668,10 @@ function normalizeTimelineEstimada(value: any): { fases: Array<Record<string, st
 function formatEditalCorretoRow(edital: EditalRow, current: Record<string, any>) {
   const sobrePrograma =
     typeof current.sobre_programa === "string" ? normalizeMaybeString(current.sobre_programa) : current.sobre_programa;
-  const descricao = normalizeMaybeString(edital.descricao) || (typeof sobrePrograma === "string" ? sobrePrograma : null);
+  // sobre_programa é markdown (o detalhe renderiza); como descricao vai cru para o card, sem "**".
+  const descricao =
+    normalizeMaybeString(edital.descricao) ||
+    (typeof sobrePrograma === "string" ? sobrePrograma.replace(/\*\*/g, "").trim() || null : null);
 
   return {
     id: edital.id,
@@ -864,6 +871,10 @@ async function validateOneEdital(
       throw e;
     }
     let finalValue = audited.ok ? audited.value : before;
+    if (typeof finalValue === "string" && !isStructuredJsonString(finalValue)) {
+      // Extração/auditoria às vezes ecoa o cabeçalho do prompt ("Edital: … Campo: Localização …").
+      finalValue = stripEchoedPromptHeader(finalValue, edital) || null;
+    }
 
     let polishMeta: { applied: boolean; raw?: string; note?: string } = { applied: false, note: "skipped" };
     if (audited.ok && finalValue != null && fieldType(field) === "string" && !skipPolish) {

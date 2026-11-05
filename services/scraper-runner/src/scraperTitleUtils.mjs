@@ -9,7 +9,10 @@ const SUPPLEMENT_START =
 
 /** Remove marcadores de lista comuns em links do site (ex.: "- ADENDO Nº 01/2025"). */
 export function stripLinkPrefix(text) {
-  return normalizeSpaces(text).replace(/^[-–—•]\s+/, "").trim();
+  return normalizeSpaces(text)
+    .replace(/^link\s+/i, "")
+    .replace(/^[-–—•]\s+/, "")
+    .trim();
 }
 
 /** Link que descreve adendo/retificação/etc., não o edital principal. */
