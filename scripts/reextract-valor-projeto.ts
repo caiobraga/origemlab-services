@@ -40,8 +40,13 @@ async function selectCandidatos(): Promise<string[]> {
   const ids = argValue("--ids");
   if (ids) return ids.split(",").map((s) => s.trim()).filter(Boolean);
 
-  const modo = args.includes("--legado") ? "legado" : args.includes("--suspeitos") ? "suspeitos" : null;
-  if (!modo) throw new Error("Use --ids, --suspeitos ou --legado");
+  // --so-corretos sozinho = todo o legado publicado.
+  const modo = args.includes("--suspeitos")
+    ? "suspeitos"
+    : args.includes("--legado") || args.includes("--so-corretos")
+      ? "legado"
+      : null;
+  if (!modo) throw new Error("Use --ids, --suspeitos, --legado ou --so-corretos");
 
   const comPdf = new Set<string>();
   for (let from = 0; ; from += 1000) {
